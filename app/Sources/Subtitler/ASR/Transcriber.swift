@@ -19,17 +19,6 @@ actor Transcriber {
     /// The model WhisperKit recommends for this chip (M1 through M4, any RAM size).
     static var recommendedModel: String { WhisperKit.recommendedModels().default }
 
-    static var modelsDirectory: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Subtitler/Models", isDirectory: true)
-    }
-
-    /// Downloads the CoreML model (or reuses the cached copy) and returns its folder.
-    func download(model: String, progress: @escaping @Sendable (Double) -> Void) async throws -> URL {
-        try await WhisperKit.download(
-            variant: model, downloadBase: Self.modelsDirectory, progressCallback: { progress($0.fractionCompleted) })
-    }
-
     /// Loads and prewarms the model. The first load on a new Mac compiles it for the
     /// Neural Engine, which can take a few minutes; later loads are fast.
     func load(model: String, folder: URL) async throws {

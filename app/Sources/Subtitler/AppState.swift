@@ -1,6 +1,16 @@
 import AppKit
 import Foundation
 
+enum SetupError: LocalizedError {
+    case noSpeechModel
+
+    var errorDescription: String? {
+        switch self {
+        case .noSpeechModel: "Download a speech model in Models to start."
+        }
+    }
+}
+
 struct SubtitleLine: Identifiable, Equatable {
     let id = UUID()
     let original: String
@@ -26,14 +36,13 @@ final class AppState: ObservableObject {
     // Settings, persisted in UserDefaults. Changes apply on the next start.
     @Published var sourceLanguage: String { didSet { save(sourceLanguage, "sourceLanguage") } }
     @Published var targetLanguage: String { didSet { save(targetLanguage, "targetLanguage") } }
-    @Published var engine: TranslationEngine { didSet { save(engine.rawValue, "engine") } }
-    @Published var whisperModel: String { didSet { save(whisperModel, "whisperModel") } }
     @Published var fontSize: Double { didSet { save(fontSize, "fontSize") } }
     @Published var showOriginal: Bool { didSet { save(showOriginal, "showOriginal") } }
 
     var isRunning: Bool { phase == .running }
     var isBusy: Bool { if case .loading = phase { true } else { false } }
 
+    let models: ModelStore
     private let defaults = UserDefaults.standard
     private let transcriber = Transcriber()
     private var loadedModel: String?
@@ -43,11 +52,10 @@ final class AppState: ObservableObject {
     private var hideTask: Task<Void, Never>?
     private lazy var overlay = OverlayController(state: self)
 
-    init() {
+    init(models: ModelStore) {
+        self.models = models
         sourceLanguage = defaults.string(forKey: "sourceLanguage") ?? Languages.auto
         targetLanguage = defaults.string(forKey: "targetLanguage") ?? "my"
-        engine = defaults.string(forKey: "engine").flatMap(TranslationEngine.init) ?? .nllb
-        whisperModel = defaults.string(forKey: "whisperModel") ?? Transcriber.recommendedModel
         fontSize = defaults.object(forKey: "fontSize") as? Double ?? 34
         showOriginal = defaults.object(forKey: "showOriginal") as? Bool ?? true
     }
@@ -108,32 +116,25 @@ final class AppState: ObservableObject {
     }
 
     private func loadSpeechModel() async throws {
-        let model = whisperModel.isEmpty ? Transcriber.recommendedModel : whisperModel
-        guard loadedModel != model else { return }
-        phase = .loading("Downloading speech model…")
-        let folder = try await transcriber.download(model: model) { [weak self] fraction in
-            DispatchQueue.main.async {
-                self?.phase = .loading("Downloading speech model… \(Int(fraction * 100))%")
-            }
-        }
-        phase = .loading("Preparing speech model (first run can take a few minutes)…")
-        try await transcriber.load(model: model, folder: folder)
-        loadedModel = model
+        guard let model = models.speechModel else { throw SetupError.noSpeechModel }
+        guard loadedModel != model.id else { return }
+        phase = .loading("Loading \(model.name) (the first run on this Mac can take a few minutes)…")
+        try await transcriber.load(model: model.id, folder: ModelFiles.localURL(for: model))
+        loadedModel = model.id
     }
 
     /// Falls back to showing the original text, so subtitles still work without a translator.
     private func startTranslator() async -> Translator {
-        guard engine != .off else { return PassthroughTranslator() }
-        guard let location = SidecarLocation.resolve() else {
-            lastError = "No translation sidecar configured; showing original text."
-            return PassthroughTranslator()
-        }
-        let sidecar = SidecarTranslator(location: location, engine: engine)
         do {
-            try await sidecar.start()
-            return sidecar
+            let translator = try TranslatorFactory.make(selection: models.selectedTranslation)
+            do {
+                try await translator.start()
+                return translator
+            } catch {
+                await translator.stop()
+                throw error
+            }
         } catch {
-            await sidecar.stop()
             lastError = "\(error.localizedDescription) Showing original text."
             return PassthroughTranslator()
         }
@@ -187,5 +188,13 @@ final class AppState: ObservableObject {
 
     private func save(_ value: Any, _ key: String) {
         defaults.set(value, forKey: key)
+    }
+}
+
+extension AppState {
+    /// Sample subtitles for `--snapshot`.
+    func previewLines() {
+        lines = [SubtitleLine(original: "I was waiting for you at the station.", translation: "ဘူတာမှာ မင်းကို စောင့်နေခဲ့တာ။")]
+        draft = "Don't worry, my brother will drive us home."
     }
 }

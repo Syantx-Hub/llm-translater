@@ -4,7 +4,9 @@ import Foundation
 /// Headless mode: runs an audio file through the same segmenter → ASR → translation
 /// pipeline as live capture and prints the subtitles. Needs no Screen Recording permission.
 ///
-///   Subtitler --file clip.m4a [--source en] [--target my] [--engine nllb] [--model NAME] [--realtime]
+///   Subtitler --file clip.m4a [--source en] [--target my] [--model SPEECH_ID] [--translator ID|sidecar:nllb|off] [--realtime]
+///
+/// Missing catalog models are downloaded first, into the same place the app uses.
 ///
 /// `--realtime` feeds audio at playback speed, so drafts and timings match live use.
 enum FileRunner {
@@ -13,39 +15,36 @@ enum FileRunner {
             arguments.firstIndex(of: name).flatMap { $0 + 1 < arguments.count ? arguments[$0 + 1] : nil }
         }
         guard let path = option("--file") else {
-            print("usage: Subtitler --file AUDIO [--source xx] [--target xx] [--engine nllb|madlad|echo|off] [--model NAME] [--realtime]")
+            print("usage: Subtitler --file AUDIO [--source xx] [--target xx] [--model SPEECH_ID] [--translator ID|sidecar:nllb|off] [--realtime]")
+            print("models: " + ModelCatalog.all.map(\.id).joined(separator: ", "))
             return 2
         }
         let source = option("--source")
         let target = option("--target") ?? "my"
-        let engine = option("--engine").flatMap(TranslationEngine.init) ?? .nllb
-        let model = option("--model") ?? Transcriber.recommendedModel
+        let speechID = option("--model") ?? ModelCatalog.recommendedSpeech
+        let selection = option("--translator") ?? ModelCatalog.defaultTranslation
         let realtime = arguments.contains("--realtime")
 
         do {
             let samples = try loadAudio(URL(fileURLWithPath: path))
             print("[audio] \(String(format: "%.1f", Double(samples.count) / SystemAudioCapture.sampleRate)) s")
 
+            guard let speech = ModelCatalog.model(id: speechID), speech.kind == .speech else {
+                print("error: unknown speech model \(speechID)")
+                return 2
+            }
             let transcriber = Transcriber()
-            print("[asr] \(model) (recommended for this Mac: \(Transcriber.recommendedModel))")
-            let folder = try await transcriber.download(model: model) { _ in }
+            print("[asr] \(speech.name) — \(Hardware.chipName), \(Hardware.ramGB) GB")
+            let speechFolder = try await ensureInstalled(speech)
             var t0 = Date()
-            try await transcriber.load(model: model, folder: folder)
+            try await transcriber.load(model: speech.id, folder: speechFolder)
             print("[asr] loaded in \(String(format: "%.1f", Date().timeIntervalSince(t0))) s")
 
-            let translator: Translator
-            if engine == .off {
-                translator = PassthroughTranslator()
-            } else {
-                guard let location = SidecarLocation.resolve() else {
-                    print("error: translation sidecar not found; run from the repo or set SUBTITLER_REPO")
-                    return 1
-                }
-                translator = SidecarTranslator(location: location, engine: engine)
-                t0 = Date()
-                try await translator.start()
-                print("[mt] \(engine.rawValue) ready in \(String(format: "%.1f", Date().timeIntervalSince(t0))) s")
-            }
+            if let model = ModelCatalog.model(id: selection) { _ = try await ensureInstalled(model) }
+            let translator = try TranslatorFactory.make(selection: selection)
+            t0 = Date()
+            try await translator.start()
+            print("[mt] \(selection) ready in \(String(format: "%.1f", Date().timeIntervalSince(t0))) s")
 
             let start = Date()
             let elapsed = { String(format: "%6.2f", Date().timeIntervalSince(start)) }
@@ -86,6 +85,16 @@ enum FileRunner {
         }
     }
 
+    private static func ensureInstalled(_ model: ModelInfo) async throws -> URL {
+        if ModelFiles.isInstalled(model) { return ModelFiles.localURL(for: model) }
+        print("[download] \(model.name) (\(model.sizeLabel))…")
+        let lastReported = Counter()
+        return try await ModelFiles.download(model) { fraction in
+            let percent = Int(fraction * 100)
+            if lastReported.advance(to: percent / 10) { print("[download] \(percent)%") }
+        }
+    }
+
     /// Any file AVAudioFile reads (wav, aiff, m4a, mp3, caf) → 16 kHz mono Float32.
     static func loadAudio(_ url: URL) throws -> [Float] {
         let file = try AVAudioFile(forReading: url)
@@ -111,5 +120,19 @@ enum FileRunner {
         }
         if let error { throw error }
         return Array(UnsafeBufferPointer(start: output.floatChannelData![0], count: Int(output.frameLength)))
+    }
+}
+
+/// Thread-safe "report each step once" counter for download progress lines.
+private final class Counter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = -1
+
+    func advance(to next: Int) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard next > value else { return false }
+        value = next
+        return true
     }
 }

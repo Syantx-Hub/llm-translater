@@ -11,10 +11,23 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-collections.git", "1.1.0"..<"1.4.0"),
     ],
     targets: [
+        // Prebuilt llama.cpp with Metal, used to run GGUF translation models natively.
+        .binaryTarget(
+            name: "llama",
+            url: "https://github.com/ggml-org/llama.cpp/releases/download/b11190/llama-b11190-xcframework.zip",
+            checksum: "03de57d3597ff23de0f50abc22748769a8c28c67b0a9754718a9e5231a9c9cf6"
+        ),
         .executableTarget(
             name: "Subtitler",
-            dependencies: [.product(name: "WhisperKit", package: "WhisperKit")],
-            path: "Sources/Subtitler"
+            dependencies: [
+                .product(name: "WhisperKit", package: "WhisperKit"),
+                "llama",
+            ],
+            path: "Sources/Subtitler",
+            linkerSettings: [
+                // llama.framework ships in Subtitler.app/Contents/Frameworks.
+                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"]),
+            ]
         ),
     ]
 )

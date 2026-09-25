@@ -16,16 +16,47 @@ struct PassthroughTranslator: Translator {
     func stop() async {}
 }
 
-enum TranslationEngine: String, CaseIterable, Identifiable {
-    case nllb, madlad, echo, off
+/// Engines served by the Python sidecar (python/translate_server.py) in dev builds.
+enum SidecarEngine: String, CaseIterable, Identifiable {
+    case nllb, madlad, echo
     var id: String { rawValue }
 
     var label: String {
         switch self {
-        case .nllb: "NLLB-200 (non-commercial)"
-        case .madlad: "MADLAD-400"
-        case .echo: "Echo (sidecar test)"
-        case .off: "Off (show original)"
+        case .nllb: "NLLB-200 via Python (non-commercial)"
+        case .madlad: "MADLAD-400 via Python"
+        case .echo: "Echo via Python (pipeline test)"
         }
+    }
+}
+
+enum TranslatorSelectionError: LocalizedError {
+    case notInstalled(String)
+    case sidecarUnavailable
+
+    var errorDescription: String? {
+        switch self {
+        case .notInstalled(let name): "\(name) is not downloaded yet. Open Models to download it."
+        case .sidecarUnavailable: "The Python translation sidecar is not available in this build."
+        }
+    }
+}
+
+enum TranslatorFactory {
+    /// - Parameter selection: a catalog model id, "sidecar:<engine>", or "off".
+    static func make(selection: String) throws -> Translator {
+        if selection == ModelStore.translationOff { return PassthroughTranslator() }
+        if selection.hasPrefix(ModelStore.sidecarPrefix) {
+            let name = String(selection.dropFirst(ModelStore.sidecarPrefix.count))
+            guard let engine = SidecarEngine(rawValue: name), let location = SidecarLocation.resolve() else {
+                throw TranslatorSelectionError.sidecarUnavailable
+            }
+            return SidecarTranslator(location: location, engine: engine)
+        }
+        guard let model = ModelCatalog.model(id: selection), model.kind == .translation else {
+            throw TranslatorSelectionError.notInstalled(selection)
+        }
+        guard ModelFiles.isInstalled(model) else { throw TranslatorSelectionError.notInstalled(model.name) }
+        return LlamaTranslator(modelPath: ModelFiles.localURL(for: model).path)
     }
 }

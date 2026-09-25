@@ -1,60 +1,69 @@
-# llm_translater
+# Subtitler
 
-Offline live-translation subtitle overlay for Apple Silicon Macs (M1 and later).
-Burmese is the primary subtitle language; other languages are supported too.
+Offline live-translation subtitles for Apple Silicon Macs (M1 and later). Subtitler
+listens to whatever your Mac is playing and shows translated subtitles in a floating,
+click-through overlay — including over full-screen video. Burmese is the primary
+subtitle language; 15 others are supported.
 
-Current stage: step 1, a feasibility eval that turns a media file into translated
-subtitles so model quality and latency can be compared.
+The app ships with no models. On first launch a setup window walks through choosing and
+downloading a speech model and a translation model; the **Models** window lets you
+download, switch and delete them later.
 
 ## Requirements
 
 - Apple Silicon Mac (any M-series chip), macOS 14+
-- Python 3.10+
-- 8 GB RAM minimum; 16 GB+ to run MADLAD without conversion
+- 8 GB RAM minimum
+- Command Line Tools (`xcode-select --install`); Xcode is not required
 
-## Setup
-
-```sh
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-No ffmpeg needed: audio is decoded with PyAV.
-
-## Run
+## Build and run
 
 ```sh
-python eval.py clip.mp4 --source en                 # EN -> Burmese, NLLB + MADLAD
-python eval.py clip.mp4 --source ko --models nllb   # KO -> Burmese, NLLB only
-python eval.py clip.mp4 --source ja --target th     # JA -> Thai
+scripts/build-app.sh            # builds app/build/Subtitler.app
+open app/build/Subtitler.app    # appears in the menu bar
 ```
 
-`--source` is auto-detected when omitted. Supported codes: `my en ko ja zh th vi id ms
-hi fr es de pt ru ar`. Burmese as a *source* works but Whisper's Burmese ASR is weak.
-
-Output goes to `outputs/<clip>/`: `source.<lang>.srt`, `<model>.<target>.srt`,
-`segments.json`, and `comparison.md` (side-by-side table plus hardware and latency
-summary).
+The first Start asks for the Screen Recording permission, which is how macOS lets apps
+hear system audio. The build is ad-hoc signed, so after a rebuild you may need to
+re-enable Subtitler in System Settings › Privacy & Security › Screen Recording.
 
 ## Pipeline
 
-PyAV decode → Silero VAD (only speech reaches Whisper, which prevents hallucinations on
-silence and music) → MLX Whisper `large-v3-turbo` on the GPU → NLLB-200 / MADLAD-400.
+ScreenCaptureKit system audio (16 kHz mono) → energy VAD segmenter (drafts every second,
+finals at pauses) → WhisperKit on the Neural Engine → MADLAD-400 via llama.cpp on the GPU
+→ overlay. Draft text shows in grey while speech is in progress; the translated line
+replaces it.
 
-## MADLAD on 8 GB Macs
+| Stage | Models | License |
+|---|---|---|
+| Speech | Whisper Large v3 Turbo (default), Turbo compact, Large v3, Small, Distil-Large v3 (English) | MIT |
+| Translation | MADLAD-400 3B Q4_K_M (default), Q8_0 | Apache 2.0 |
 
-MADLAD-400 3B needs ~6 GB in bf16 and will swap on 8 GB. Convert it once to
-CTranslate2 int8 (~3 GB) and pass the path:
+Models are stored in `~/Library/Application Support/Subtitler/Models`.
+
+## Headless testing
+
+Run an audio file through the same pipeline, no permission needed:
 
 ```sh
-ct2-transformers-converter --model google/madlad400-3b-mt \
-    --quantization int8 --low_cpu_mem_usage --output_dir models/madlad400-3b-ct2
-python eval.py clip.mp4 --madlad-ct2 models/madlad400-3b-ct2
+say -o /tmp/test.aiff "Where have you been all night?"
+app/build/Subtitler.app/Contents/MacOS/Subtitler --file /tmp/test.aiff --source en --target my
 ```
 
-The conversion reads the full checkpoint, so close other apps while it runs.
+Options: `--model <speech id>`, `--translator <model id | sidecar:nllb | off>`,
+`--realtime` (feed at playback speed). Missing models are downloaded first.
 
-## Licensing
+`--snapshot DIR` renders every window to PNGs in light and dark mode.
 
-Whisper: MIT. MADLAD-400: Apache 2.0. NLLB-200: CC-BY-NC, so it is for evaluation and
-portfolio use only, not for a commercial release.
+## Python tools (`python/`)
+
+- `eval.py` — offline eval: media file → Silero VAD → MLX Whisper → NLLB / MADLAD, with
+  per-line latency and a side-by-side `comparison.md`.
+- `translate_server.py` — JSON-lines translation sidecar. Development builds can pick it
+  under Models › Developer engine, e.g. to compare NLLB-200 against MADLAD.
+
+```sh
+cd python && python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt
+.venv/bin/python eval.py clip.mp4 --source en
+```
+
+NLLB-200 is CC-BY-NC: for evaluation only, never in a commercial release.

@@ -16,8 +16,10 @@ swift build -c "$CONFIG" --arch arm64
 BIN_DIR="$(swift build -c "$CONFIG" --arch arm64 --show-bin-path)"
 
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
 cp "$BIN_DIR/Subtitler" "$APP/Contents/MacOS/Subtitler"
+# llama.cpp (translation runtime) is a dynamic framework, found via @executable_path/../Frameworks.
+cp -R "$BIN_DIR/llama.framework" "$APP/Contents/Frameworks/"
 # SwiftPM resource bundles (e.g. swift-transformers' Hub) are looked up in Contents/Resources.
 find "$BIN_DIR" -maxdepth 1 -name "*.bundle" -exec cp -R {} "$APP/Contents/Resources/" \;
 sed "s|__REPO_ROOT__|$ROOT|" "$APP_DIR/Resources/Info.plist" > "$APP/Contents/Info.plist"

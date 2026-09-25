@@ -44,7 +44,7 @@ struct SidecarLocation {
         return nil
     }
 
-    func arguments(for engine: TranslationEngine) -> [String] {
+    func arguments(for engine: SidecarEngine) -> [String] {
         var args = [script.path, "--engine", engine.rawValue]
         let ct2 = repoRoot.appendingPathComponent("models/madlad400-3b-ct2")
         if engine == .madlad, FileManager.default.fileExists(atPath: ct2.path) {
@@ -57,7 +57,7 @@ struct SidecarLocation {
 /// Talks to python/translate_server.py over stdin/stdout, one JSON object per line.
 actor SidecarTranslator: Translator {
     private let location: SidecarLocation
-    private let engine: TranslationEngine
+    private let engine: SidecarEngine
 
     private var process: Process?
     private var input: FileHandle?
@@ -67,7 +67,7 @@ actor SidecarTranslator: Translator {
     private var readyWaiter: CheckedContinuation<Void, Error>?
     private var readerTask: Task<Void, Never>?
 
-    init(location: SidecarLocation, engine: TranslationEngine) {
+    init(location: SidecarLocation, engine: SidecarEngine) {
         self.location = location
         self.engine = engine
     }

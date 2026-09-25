@@ -2,37 +2,24 @@ import SwiftUI
 
 struct ControlPanel: View {
     @ObservedObject var state: AppState
+    @ObservedObject var models: ModelStore
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
             Divider()
-            Form {
-                Picker("Spoken language", selection: $state.sourceLanguage) {
-                    Text(autoLabel).tag(Languages.auto)
-                    ForEach(Languages.all) { Text($0.name).tag($0.code) }
-                }
-                Picker("Subtitles in", selection: $state.targetLanguage) {
-                    ForEach(Languages.all) { Text($0.name).tag($0.code) }
-                }
-                Picker("Translator", selection: $state.engine) {
-                    ForEach(TranslationEngine.allCases) { Text($0.label).tag($0) }
-                }
-                Slider(value: $state.fontSize, in: 20...64) { Text("Text size") }
-                Toggle("Show original under translation", isOn: $state.showOriginal)
-                TextField("Speech model", text: $state.whisperModel, prompt: Text(Transcriber.recommendedModel))
-            }
-            .disabled(state.isRunning || state.isBusy)
-
-            if state.isRunning || state.isBusy {
-                Text("Settings apply the next time you start.")
-                    .font(.caption).foregroundStyle(.secondary)
+            if models.needsSetup {
+                setupPrompt
+            } else {
+                settings
             }
             if let error = state.lastError {
                 Text(error).font(.caption).foregroundStyle(.orange).lineLimit(3)
             }
             Divider()
             HStack {
+                Button("Models…") { show("models") }
                 Spacer()
                 Button("Quit") { NSApplication.shared.terminate(nil) }
             }
@@ -52,8 +39,63 @@ struct ControlPanel: View {
                 state.isRunning ? state.stop() : state.start()
             }
             .keyboardShortcut(.defaultAction)
-            .disabled(state.isBusy)
+            .disabled(state.isBusy || models.needsSetup)
         }
+    }
+
+    private var setupPrompt: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Download a speech model to get started.")
+            Button("Set up Subtitler…") { show("welcome") }
+                .buttonStyle(.borderedProminent)
+        }
+    }
+
+    private var settings: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Form {
+                Picker("Spoken language", selection: $state.sourceLanguage) {
+                    Text(autoLabel).tag(Languages.auto)
+                    ForEach(Languages.all) { Text($0.name).tag($0.code) }
+                }
+                Picker("Subtitles in", selection: $state.targetLanguage) {
+                    ForEach(Languages.all) { Text($0.name).tag($0.code) }
+                }
+                Slider(value: $state.fontSize, in: 20...64) { Text("Text size") }
+                Toggle("Show original under translation", isOn: $state.showOriginal)
+            }
+            .disabled(state.isRunning || state.isBusy)
+
+            VStack(alignment: .leading, spacing: 3) {
+                modelRow("waveform", models.speechModel?.name ?? "No speech model")
+                modelRow("character.bubble", translationName)
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+            if state.isRunning || state.isBusy {
+                Text("Changes apply the next time you start.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func modelRow(_ icon: String, _ text: String) -> some View {
+        Label(text, systemImage: icon)
+    }
+
+    private var translationName: String {
+        let selection = models.selectedTranslation
+        if selection == ModelStore.translationOff { return "No translation (original text)" }
+        if selection.hasPrefix(ModelStore.sidecarPrefix) {
+            return SidecarEngine(rawValue: String(selection.dropFirst(ModelStore.sidecarPrefix.count)))?.label ?? selection
+        }
+        return models.translationModel?.name ?? "Translation model not downloaded"
+    }
+
+    private func show(_ window: String) {
+        openWindow(id: window)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     private var autoLabel: String {
