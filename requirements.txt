@@ -1,0 +1,10 @@
+mlx-whisper
+silero-vad
+av
+numpy
+torch
+transformers>=4.56
+sentencepiece
+protobuf
+ctranslate2
+myanmartools
