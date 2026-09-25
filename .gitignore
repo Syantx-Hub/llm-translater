@@ -1,6 +1,6 @@
 .venv/
 outputs/
-models/
+/models/
 __pycache__/
 .build/
 app/build/
