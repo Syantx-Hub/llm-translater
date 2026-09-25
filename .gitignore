@@ -2,3 +2,6 @@
 outputs/
 models/
 __pycache__/
+.build/
+app/build/
+.swiftpm/

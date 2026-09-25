@@ -12,7 +12,6 @@ Usage:
 """
 
 import argparse
-import gc
 import json
 import platform
 import statistics
@@ -22,28 +21,9 @@ from pathlib import Path
 
 import numpy as np
 
-SAMPLE_RATE = 16_000
-MADLAD_ID = "google/madlad400-3b-mt"
+from translators import LANGS, build_translator, free_memory
 
-# Whisper / MADLAD code -> (name, NLLB code). MADLAD's target prefix is "<2{code}>".
-LANGS = {
-    "my": ("Burmese", "mya_Mymr"),
-    "en": ("English", "eng_Latn"),
-    "ko": ("Korean", "kor_Hang"),
-    "ja": ("Japanese", "jpn_Jpan"),
-    "zh": ("Chinese", "zho_Hans"),
-    "th": ("Thai", "tha_Thai"),
-    "vi": ("Vietnamese", "vie_Latn"),
-    "id": ("Indonesian", "ind_Latn"),
-    "ms": ("Malay", "zsm_Latn"),
-    "hi": ("Hindi", "hin_Deva"),
-    "fr": ("French", "fra_Latn"),
-    "es": ("Spanish", "spa_Latn"),
-    "de": ("German", "deu_Latn"),
-    "pt": ("Portuguese", "por_Latn"),
-    "ru": ("Russian", "rus_Cyrl"),
-    "ar": ("Arabic", "arb_Arab"),
-}
+SAMPLE_RATE = 16_000
 
 
 # --- Hardware ------------------------------------------------------------------
@@ -57,29 +37,6 @@ def mac_info() -> tuple[str, float]:
         return subprocess.run(["sysctl", "-n", key], capture_output=True, text=True).stdout.strip()
 
     return sysctl("machdep.cpu.brand_string"), int(sysctl("hw.memsize")) / 2**30
-
-
-def free_memory():
-    gc.collect()
-    try:
-        import mlx.core as mx
-
-        mx.clear_cache()
-    except (ImportError, AttributeError):
-        pass
-    try:
-        import torch
-
-        if torch.backends.mps.is_available():
-            torch.mps.empty_cache()
-    except ImportError:
-        pass
-
-
-def torch_device():
-    import torch
-
-    return "mps" if torch.backends.mps.is_available() else "cpu"
 
 
 # --- Audio + ASR ---------------------------------------------------------------
@@ -148,97 +105,6 @@ def transcribe(audio: np.ndarray, lang: str | None, model_repo: str):
     return segs, lang, elapsed
 
 
-# --- Translators ---------------------------------------------------------------
-
-
-class NLLB:
-    """facebook/nllb-200 — CC-BY-NC, portfolio use only."""
-
-    name = "nllb"
-
-    def __init__(self, src: str, tgt: str, model_id: str):
-        import torch
-        from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
-
-        self.torch = torch
-        self.device = torch_device()
-        self.tok = AutoTokenizer.from_pretrained(model_id, src_lang=LANGS[src][1])
-        self.model = AutoModelForSeq2SeqLM.from_pretrained(model_id).to(self.device).eval()
-        self.bos = self.tok.convert_tokens_to_ids(LANGS[tgt][1])
-
-    def translate(self, text: str) -> str:
-        batch = self.tok(text, return_tensors="pt").to(self.device)
-        with self.torch.inference_mode():
-            out = self.model.generate(
-                **batch, forced_bos_token_id=self.bos, num_beams=4, max_new_tokens=256
-            )
-        return self.tok.decode(out[0], skip_special_tokens=True)
-
-
-class MadladHF:
-    """google/madlad400-3b-mt via transformers on Metal — Apache 2.0.
-
-    ~6 GB in bf16, so only practical on Macs with 16 GB or more. Otherwise use MadladCT2.
-    """
-
-    name = "madlad"
-
-    def __init__(self, src: str, tgt: str):
-        import torch
-        from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
-
-        self.torch = torch
-        self.device = torch_device()
-        self.prefix = f"<2{tgt}> "
-        self.tok = AutoTokenizer.from_pretrained(MADLAD_ID)
-        # T5-family models overflow in fp16; bf16 is safe.
-        self.model = (
-            AutoModelForSeq2SeqLM.from_pretrained(MADLAD_ID, dtype=torch.bfloat16)
-            .to(self.device)
-            .eval()
-        )
-
-    def translate(self, text: str) -> str:
-        # MADLAD picks the target from the "<2xx>" prefix; the source is auto-detected.
-        batch = self.tok(self.prefix + text, return_tensors="pt").to(self.device)
-        with self.torch.inference_mode():
-            out = self.model.generate(**batch, num_beams=4, max_new_tokens=256)
-        return self.tok.decode(out[0], skip_special_tokens=True)
-
-
-class MadladCT2:
-    """MADLAD-400 converted to CTranslate2 int8 (~3 GB) — see README for conversion."""
-
-    name = "madlad"
-
-    def __init__(self, src: str, tgt: str, path: str):
-        import ctranslate2
-        from transformers import AutoTokenizer
-
-        self.prefix = f"<2{tgt}> "
-        self.translator = ctranslate2.Translator(path, device="cpu", compute_type="int8")
-        self.tok = AutoTokenizer.from_pretrained(MADLAD_ID)
-
-    def translate(self, text: str) -> str:
-        tokens = self.tok.convert_ids_to_tokens(self.tok.encode(self.prefix + text))
-        result = self.translator.translate_batch([tokens], beam_size=4, max_decoding_length=256)
-        ids = self.tok.convert_tokens_to_ids(result[0].hypotheses[0])
-        return self.tok.decode(ids, skip_special_tokens=True)
-
-
-def build_translator(name: str, src: str, tgt: str, args, ram_gb: float):
-    if name == "nllb":
-        return NLLB(src, tgt, args.nllb_model)
-    if name == "madlad":
-        if args.madlad_ct2:
-            return MadladCT2(src, tgt, args.madlad_ct2)
-        if ram_gb < 16:
-            print(f"  warning: MADLAD bf16 needs ~6 GB; with {ram_gb:.0f} GB it will swap. "
-                  "Use --madlad-ct2 (see README).")
-        return MadladHF(src, tgt)
-    raise ValueError(f"unknown model: {name}")
-
-
 # --- Output --------------------------------------------------------------------
 
 
@@ -297,7 +163,7 @@ def main():
     p.add_argument("audio", type=Path, help="audio or video file")
     p.add_argument("--source", choices=sorted(LANGS), help="spoken language (default: auto-detect)")
     p.add_argument("--target", choices=sorted(LANGS), default="my", help="subtitle language (default: my)")
-    p.add_argument("--models", default="nllb,madlad", help="comma-separated: nllb,madlad")
+    p.add_argument("--models", default="nllb,madlad", help="comma-separated: nllb,madlad,echo")
     p.add_argument("--whisper", default="mlx-community/whisper-large-v3-turbo", help="MLX Whisper repo")
     p.add_argument("--nllb-model", default="facebook/nllb-200-distilled-600M")
     p.add_argument("--madlad-ct2", help="path to a CTranslate2-converted MADLAD model")
@@ -332,13 +198,15 @@ def main():
     for name in models:
         print(f"[mt] loading {name} ...")
         t0 = time.perf_counter()
-        translator = build_translator(name, src, args.target, args, ram_gb)
+        translator = build_translator(
+            name, nllb_model=args.nllb_model, madlad_ct2=args.madlad_ct2, ram_gb=ram_gb
+        )
         load_s = time.perf_counter() - t0
 
         per_line_ms = []
         for i, s in enumerate(segs, 1):
             t0 = time.perf_counter()
-            s[name] = translator.translate(s["text"])
+            s[name] = translator.translate(s["text"], src, args.target)
             per_line_ms.append((time.perf_counter() - t0) * 1000)
             print(f"  [{name} {i}/{len(segs)}] {s['text']}\n    -> {s[name]}")
 
