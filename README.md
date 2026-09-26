@@ -9,6 +9,8 @@ The app ships with no models. On first launch a setup window walks through choos
 downloading a speech model and a translation model; the **Models** window lets you
 download, switch and delete them later.
 
+For how it all works inside, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 ## Features
 
 - **Translate or transcribe only** — pick the mode in the main window.
