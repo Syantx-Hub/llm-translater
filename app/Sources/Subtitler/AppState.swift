@@ -99,7 +99,6 @@ final class AppState: ObservableObject {
     @Published var targetLanguage: String { didSet { save(targetLanguage, "targetLanguage"); updatePreview() } }
     @Published var mode: CaptionMode { didSet { save(mode.rawValue, "mode"); updatePreview() } }
     @Published var responsiveness: Responsiveness { didSet { save(responsiveness.rawValue, "responsiveness") } }
-    @Published var translateDrafts: Bool { didSet { save(translateDrafts, "translateDrafts") } }
     /// With Apple Speech and Auto-detect: detect the language with Whisper on the first
     /// line, then switch to Apple Speech for the rest of the session.
     @Published var appleAutoHandover: Bool { didSet { save(appleAutoHandover, "appleAutoHandover") } }
@@ -144,7 +143,6 @@ final class AppState: ObservableObject {
         mode = defaults.string(forKey: "mode").flatMap(CaptionMode.init)
             ?? (models.legacyTranscribeOnly ? .transcribe : .translate)
         responsiveness = defaults.string(forKey: "responsiveness").flatMap(Responsiveness.init) ?? .balanced
-        translateDrafts = defaults.object(forKey: "translateDrafts") as? Bool ?? true
         appleAutoHandover = defaults.object(forKey: "appleAutoHandover") as? Bool ?? true
     }
 
@@ -220,7 +218,8 @@ final class AppState: ObservableObject {
                 transcriber: transcriber, translator: translator,
                 source: sourceLanguage == Languages.auto ? nil : sourceLanguage,
                 target: sessionMode == .translate ? sessionTarget : nil,
-                translateDrafts: sessionMode == .translate && translateDrafts,
+                // Finished sentences are translated in the background while someone speaks.
+                translateDrafts: sessionMode == .translate,
                 emit: { [weak self] update in
                     DispatchQueue.main.async { self?.apply(update, session: id) }
                 })
@@ -453,11 +452,11 @@ extension AppState {
         Array(SampleCaptions.lines(language: captionLanguage, translating: mode == .translate).dropLast())
     }
 
-    var sampleDraft: DraftCaption {
-        let last = SampleCaptions.lines(language: captionLanguage, translating: mode == .translate).last!
-        return mode == .translate && translateDrafts
-            ? DraftCaption(text: last.translation, isTranslation: true)
-            : DraftCaption(text: last.original, isTranslation: false)
+    /// Transcribe-only shows words as they're spoken; translating shows finished lines only.
+    var sampleDraft: DraftCaption? {
+        guard mode == .transcribe else { return nil }
+        let last = SampleCaptions.lines(language: captionLanguage, translating: false).last!
+        return DraftCaption(text: last.original, isTranslation: false)
     }
 
     func previewLines() {

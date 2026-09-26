@@ -65,7 +65,12 @@ struct CaptionsView: View {
                         labeledSlider("Original size", value: $style.originalScale, in: 0.3...0.9, format: "%.0f%%", scale: 100)
                     }
                     Toggle("Show words while someone is speaking", isOn: $style.showDrafts)
-                        .help("Shows the current line as it's being spoken. Off: lines appear only once finished.")
+                        .disabled(state.mode == .translate)
+                    Text(state.mode == .translate
+                         ? "Translate mode shows each line once it's finished: a sentence can't be translated well before it ends."
+                         : "Shows the line as it's being spoken. Off: lines appear only once finished.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
             .formStyle(.grouped)

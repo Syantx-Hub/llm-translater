@@ -134,14 +134,18 @@ import Testing
         #expect(updates.values.contains(.draft(nil)))
     }
 
-    @Test func finishedSentencesAreTranslatedWhileSpeaking() async {
+    /// Translate mode shows finished lines only, but translates finished sentences in the
+    /// background while someone speaks so the line is ready sooner.
+    @Test func finishedSentencesAreTranslatedInTheBackground() async {
         let transcriber = FakeTranscriber(script: [1000: "Where have you been?"])
-        let (pipeline, updates) = pipeline(transcriber: transcriber)
+        let translator = FakeTranslator()
+        let (pipeline, updates) = pipeline(transcriber: transcriber, translator: translator)
 
         await pipeline.submit(.partial(samples(1000), isPause: true))
         await pipeline.flush()
 
-        #expect(updates.values.contains(.draft(DraftCaption(text: "[my] Where have you been?", isTranslation: true))))
+        #expect(await translator.calls == ["Where have you been?"])
+        #expect(updates.values.isEmpty)
     }
 
     /// Word order differs between languages, so half a sentence is never translated, and
@@ -157,39 +161,24 @@ import Testing
         #expect(updates.values.isEmpty)
     }
 
-    @Test func withoutLiveTranslationTheOriginalWordsShow() async {
-        let (pipeline, updates) = pipeline(transcriber: FakeTranscriber(script: [:]), translateDrafts: false)
+    @Test func translateModeNeverShowsLiveWords() async {
+        let (pipeline, updates) = pipeline(transcriber: FakeTranscriber(script: [:]))
+
+        await pipeline.submitVolatile("When we got home,")
+        await pipeline.submitVolatile("When we got home, nobody answered")
+        await pipeline.flush()
+
+        #expect(!updates.values.contains { if case .draft(let d?) = $0 { !d.text.isEmpty } else { false } })
+    }
+
+    @Test func transcribeModeShowsWordsAsTheyArrive() async {
+        let (pipeline, updates) = pipeline(
+            transcriber: FakeTranscriber(script: [:]), translator: PassthroughTranslator(), target: nil, translateDrafts: false)
 
         await pipeline.submitVolatile("Where have you")
         await pipeline.flush()
 
         #expect(updates.values == [.draft(DraftCaption(text: "Where have you", isTranslation: false))])
-    }
-
-    @Test func liveLineShowsOnlyTheTranslatedPart() async {
-        let (pipeline, updates) = pipeline(transcriber: FakeTranscriber(script: [:]))
-
-        await pipeline.submitVolatile("When we got home, nobody")
-        await pipeline.flush()
-        await pipeline.submitVolatile("When we got home, nobody answered")
-        await pipeline.flush()
-
-        #expect(updates.values.last == .draft(DraftCaption(text: "[my] When we got home,", isTranslation: true)))
-        #expect(!updates.values.contains { if case .draft(let d?) = $0 { !d.isTranslation } else { false } })
-    }
-
-    @Test func finalTranslationStreamsIntoTheLiveLine() async {
-        let translator = FakeTranslator(streams: true)
-        let (pipeline, updates) = pipeline(transcriber: FakeTranscriber(script: [:]), translator: translator, translateDrafts: false)
-
-        await pipeline.submitFinal("Don't worry about it.", speechEndedAt: Date())
-        await pipeline.flush()
-
-        let drafts = updates.values.compactMap { if case .draft(let d?) = $0 { d } else { nil } }
-        #expect(drafts.contains { $0.isTranslation && $0.text.hasPrefix("[my]") })
-        #expect(lines(updates).map(\.translation) == ["[my] Don't worry about it."])
-        // The finished line is the last thing shown; no late partial covers it.
-        if case .line = updates.values.last {} else { Issue.record("expected the line last") }
     }
 
     @Test func stableSplitFindsFinishedSentencesAndClauses() {
@@ -249,7 +238,6 @@ import Testing
 
         #expect(await translator.calls == ["Where have you been?"])
         #expect(lines(updates).map(\.translation) == ["[my] Where have you been?"])
-        #expect(updates.values.contains(.draft(DraftCaption(text: "[my] Where have you been?", isTranslation: true))))
     }
 
     @Test func finishedSentencesAreNotTranslatedTwice() async {

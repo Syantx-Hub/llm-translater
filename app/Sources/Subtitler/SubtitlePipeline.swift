@@ -71,13 +71,7 @@ actor SubtitlePipeline {
     private var sentenceCacheOrder: [String] = []
     /// The newest source text of the line being spoken.
     private var liveSource: String?
-    /// Set when the live line shows the current utterance; a finished line's streamed
-    /// translation must not overwrite the next line's words.
-    private var liveShowsNextLine = false
-    /// Identifies the final whose translation is streaming into the live line.
-    private var streamingCommit = 0
-    /// Source text of a draft translation a committed final is waiting for.
-    private var awaitedDraft: String?
+
     /// Sentences of the current streaming phrase already shown as finished lines.
     private var committedSentences = 0
 
@@ -106,6 +100,9 @@ actor SubtitlePipeline {
 
     private func emit(_ update: Update) {
         guard !cancelled else { return }
+        // When translating, only finished lines are shown: a sentence can't be translated
+        // well before it ends, and the original words would be the wrong language.
+        if target != nil, case .draft(let caption?) = update, !caption.text.isEmpty { return }
         emitUpdate(update)
     }
 
@@ -185,31 +182,19 @@ actor SubtitlePipeline {
         showDraft(result.text)
     }
 
-    /// Shows the words being spoken. Only finished sentences and clauses are translated:
-    /// word order differs between languages (Burmese puts the verb last), so translating
-    /// half a sentence gives words that change or are simply wrong. When translating, the
-    /// live line shows translations only; until the first clause is done, the previous
-    /// line stays up rather than flashing words in the original language.
+    /// Shows the words being spoken (transcribe-only), and when translating, starts
+    /// translating finished sentences and clauses in the background so the line's
+    /// translation is ready, or nearly, by the time the line ends. Half sentences are never
+    /// translated: word order differs between languages (Burmese puts the verb last).
     private func showDraft(_ text: String) {
         liveSource = text
-        liveShowsNextLine = true
-        guard translateDrafts, sourceNeedsTranslation else {
-            emit(.draft(DraftCaption(text: text, isTranslation: false)))
-            return
-        }
+        emit(.draft(DraftCaption(text: text, isTranslation: false)))
+        guard translateDrafts, sourceNeedsTranslation else { return }
         let (complete, _) = Self.stableSplit(text)
         if !complete.isEmpty, translatedDraft?.text != complete, draftTranslation?.text != complete {
             pendingDraftText = complete
             startDraftTranslation()
         }
-        if let caption = composeDraft(text) { emit(.draft(caption)) }
-    }
-
-    /// The translation of the finished part of `text`, if one is ready.
-    private func composeDraft(_ text: String) -> DraftCaption? {
-        let (complete, _) = Self.stableSplit(text)
-        guard let done = translatedDraft, complete.hasPrefix(done.text) else { return nil }
-        return DraftCaption(text: done.translation, isTranslation: true)
     }
 
     /// At most one draft translation runs; a newer draft replaces the queued one.
@@ -219,9 +204,7 @@ actor SubtitlePipeline {
         let generation = utterance
         let task = Task { [context] in
             let t0 = Date()
-            let result = try? await self.translateCached(text, from: from, to: target, context: context) { partial in
-                Task { await self.showDraftPartial(partial, of: text, generation: generation) }
-            }
+            let result = try? await self.translateCached(text, from: from, to: target, context: context)
             Trace.log("draft mt \(String(format: "%.2f", Date().timeIntervalSince(t0)))s")
             return result
         }
@@ -237,9 +220,6 @@ actor SubtitlePipeline {
         let text = draftTranslation?.text
         draftTranslation = nil
         if let translation, let text { translatedDraft = (text, translation) }
-        if translation != nil, finals.isEmpty, let liveSource, let caption = composeDraft(liveSource) {
-            emit(.draft(caption))
-        }
         startDraftTranslation()
     }
 
@@ -351,9 +331,6 @@ actor SubtitlePipeline {
         // (the translator does one thing at a time). One that does will fill the sentence
         // cache, so let it finish.
         if let inFlight, draftTask == nil, !text.hasPrefix(inFlight.text) { inFlight.task.cancel() }
-        liveShowsNextLine = false
-        streamingCommit += 1
-        let commitID = streamingCommit
 
         let previous = translationChain
         translationChain = Task { [target] in
@@ -369,20 +346,12 @@ actor SubtitlePipeline {
                 self.emit(.line(original: text, translation: finishedTranslation, latency: latency()))
                 return
             }
-            if let draftTask {
-                self.awaitedDraft = text
-                let translation = await draftTask.value
-                self.awaitedDraft = nil
-                if let translation {
-                    self.emit(.line(original: text, translation: translation, latency: latency()))
-                    return
-                }
+            if let draftTask, let translation = await draftTask.value {
+                self.emit(.line(original: text, translation: translation, latency: latency()))
+                return
             }
             do {
-                let translation = try await self.translateCached(text, from: from, to: target, context: lineContext) { partial in
-                    Task { await self.showStreamingTranslation(partial, commit: commitID) }
-                }
-                self.streamingCommit += 1 // late partials must not overwrite the finished line
+                let translation = try await self.translateCached(text, from: from, to: target, context: lineContext)
                 self.emit(.line(original: text, translation: translation, latency: latency()))
             } catch {
                 guard !Task.isCancelled else { return }
@@ -394,28 +363,8 @@ actor SubtitlePipeline {
 
     // MARK: Translation
 
-    /// A draft translation as it is generated, shown while its line is still being spoken
-    /// or while the finished line waits for it.
-    private func showDraftPartial(_ partial: String, of source: String, generation: Int) {
-        guard !partial.isEmpty else { return }
-        if generation == utterance, let liveSource {
-            guard Self.stableSplit(liveSource).complete.hasPrefix(source) else { return }
-            emit(.draft(DraftCaption(text: partial, isTranslation: true)))
-        } else if awaitedDraft == source, !liveShowsNextLine {
-            emit(.draft(DraftCaption(text: partial, isTranslation: true)))
-        }
-    }
-
-    /// A finished line's translation as it is generated, shown in the live line unless the
-    /// speaker has already started the next line.
-    private func showStreamingTranslation(_ text: String, commit: Int) {
-        guard commit == streamingCommit, !liveShowsNextLine, !text.isEmpty else { return }
-        emit(.draft(DraftCaption(text: text, isTranslation: true)))
-    }
-
     /// `translate(...)` with a per-sentence cache shared by drafts and finals.
-    private func translateCached(_ text: String, from source: String, to target: String, context: [String],
-                                 partial: (@Sendable (String) -> Void)? = nil) async throws -> String {
+    private func translateCached(_ text: String, from source: String, to target: String, context: [String]) async throws -> String {
         var parts: [String] = []
         for sentence in Self.sentences(in: text) {
             let key = "\(source)>\(target)|\(sentence)"
@@ -423,10 +372,7 @@ actor SubtitlePipeline {
                 parts.append(cached)
                 continue
             }
-            let done = parts.joined(separator: " ")
-            let translation = try await translator.translate(sentence, from: source, to: target, context: context) { piece in
-                partial?([done, piece].filter { !$0.isEmpty }.joined(separator: " "))
-            }
+            let translation = try await translator.translate(sentence, from: source, to: target, context: context)
             sentenceCache[key] = translation
             sentenceCacheOrder.append(key)
             if sentenceCacheOrder.count > 64 { sentenceCache[sentenceCacheOrder.removeFirst()] = nil }

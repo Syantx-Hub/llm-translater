@@ -5,19 +5,9 @@ import Foundation
 protocol Translator: Sendable {
     func start() async throws
     /// - Parameter context: the previous few source lines, for consistent names and pronouns.
+    /// Cancelling the calling task stops the translation early.
     func translate(_ text: String, from source: String, to target: String, context: [String]) async throws -> String
-    /// Like `translate`, but reports the translation so far as it is produced, for engines
-    /// that generate it word by word. Cancelling the calling task stops it early.
-    func translate(_ text: String, from source: String, to target: String, context: [String],
-                   partial: @escaping @Sendable (String) -> Void) async throws -> String
     func stop() async
-}
-
-extension Translator {
-    func translate(_ text: String, from source: String, to target: String, context: [String],
-                   partial: @escaping @Sendable (String) -> Void) async throws -> String {
-        try await translate(text, from: source, to: target, context: context)
-    }
 }
 
 /// Shows the recognised text as-is. Used when no translation engine is configured.

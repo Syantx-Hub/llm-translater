@@ -400,24 +400,20 @@ line is emitted. `AppState` smooths it and shows it in the status line.
 In auto mode, the language is locked from the **first final**, never from a draft: half a
 second of audio is too little to trust. Until then, drafts are shown untranslated.
 
-### Live translation and word order
+### Translate mode shows finished lines only
 
-Languages put words in different orders: Burmese, Korean and Japanese put the verb last,
-so half an English sentence can't be translated reliably, and a translation of it would
-keep changing. The live line therefore translates only what is finished:
+Languages put words in different orders (Burmese, Korean and Japanese put the verb
+last), so a sentence can't be translated well before it ends, and showing the original
+words meanwhile mixes two languages on screen. In translate mode the pipeline therefore
+emits no live words at all (`emit` drops drafts when there is a target): each line
+appears once it is finished.
 
-- `stableSplit` cuts the words heard so far into a *complete* part (sentences, and clauses
-  ending in a comma or semicolon once they have three or more words) and the unfinished
-  *tail*.
-- Only the complete part is translated, and in translate mode the live line shows
-  translations only. Until the first clause is done, the previous line stays up rather
-  than flashing words in the original language. (With "Translate while speaking" off,
-  the live line shows the original words instead.)
-- Translations stream in: `Translator.translate(..., partial:)` reports text every four
-  tokens, so the first translated words appear about 0.2 s after a sentence completes
-  instead of after the whole sentence (~1 s for Burmese on an M2).
-- When a line is finished, a draft translation of text the line doesn't start with is
-  cancelled; before this, the final waited for it behind the one-at-a-time translator.
+The waiting time is still used. `stableSplit` cuts the words heard so far into a
+*complete* part (sentences, and clauses ending in a comma or semicolon once they have
+three or more words) and the unfinished *tail*, and the complete part is translated in the
+background. By the time the line ends, its translation is usually done or nearly done.
+When a line finishes, a background translation of text the line doesn't start with is
+cancelled so the line never waits behind it.
 
 ### Streaming recognizers
 

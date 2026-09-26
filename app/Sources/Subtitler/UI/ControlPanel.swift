@@ -86,9 +86,6 @@ struct ControlPanel: View {
                 Picker("Responsiveness", selection: $state.responsiveness) {
                     ForEach(Responsiveness.allCases) { Text($0.label).tag($0) }
                 }
-                if state.mode == .translate {
-                    Toggle("Translate while speaking", isOn: $state.translateDrafts)
-                }
             }
             .disabled(state.isRunning || state.isBusy)
 
