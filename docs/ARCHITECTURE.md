@@ -598,6 +598,29 @@ UserDefaults on change.
 
 ---
 
+## 10b. Translating subtitle files
+
+Live captions can never be early: a sentence can only be translated once it has been
+heard. For films that already have subtitles, **Translate Subtitles** translates the
+file ahead of time instead, so the translation keeps the original timing and appears
+exactly when the actor speaks.
+
+- `SubtitleFile` reads SubRip (`.srt`) and WebVTT (`.vtt`): UTF-8, UTF-16 or Windows-1252,
+  with or without a BOM, CRLF line endings, VTT headers, cue identifiers and settings.
+  Malformed blocks are skipped. It writes SubRip.
+- `SubtitleTranslator.translate` translates each cue's plain text (formatting tags such
+  as `<i>` and `{\an8}` and line breaks removed), sentence by sentence, keeping the timing.
+  Repeated lines ("Yes.", "What?") are translated once. It can be cancelled.
+- The result is saved next to the original, named so players load it automatically:
+  `Movie.en.srt` → `Movie.my.srt`. Existing files are never overwritten (`Movie.my 2.srt`).
+- `SubtitleJob` drives the window: load, progress with time left, cancel, show in Finder.
+  It is disabled during a live session, because both would load the translation model
+  (about 2 GB).
+- Headless: `Subtitler --translate-subtitles Movie.en.srt --target my`.
+
+On an M2 with MADLAD Q4, a line takes about 0.5 s, so a 1,000-line film takes around
+8–10 minutes.
+
 ## 11. Models: catalog, download, delete
 
 ### Catalog
@@ -761,7 +784,7 @@ Notes:
 ## 15. Tests
 
 ```sh
-cd app && swift test                              # 72 tests, ~1–2 s
+cd app && swift test                              # 85 tests, ~1–2 s
 SUBTITLER_E2E=1 swift test --filter endToEnd      # real models, slow
 python3 -m unittest discover -s python/tests      # sidecar protocol
 ```

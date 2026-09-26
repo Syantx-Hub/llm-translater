@@ -10,6 +10,10 @@ enum Entry {
             MainActor.assumeIsolated { Snapshotter.run(into: CommandLine.arguments[index + 1]) }
             exit(0)
         }
+        if CommandLine.arguments.contains("--translate-subtitles") {
+            Task.detached { exit(await SubtitleRunner.run(arguments: CommandLine.arguments)) }
+            dispatchMain()
+        }
         if CommandLine.arguments.contains("--audio-probe") {
             Task.detached { exit(await AudioProbe.run()) }
             dispatchMain()

@@ -118,3 +118,37 @@ final class SubtitleJob: ObservableObject {
         phase = .idle
     }
 }
+
+/// Headless: `Subtitler --translate-subtitles Movie.en.srt [--target my] [--source en] [--translator ID]`
+enum SubtitleRunner {
+    static func run(arguments: [String]) async -> Int32 {
+        func option(_ name: String) -> String? {
+            arguments.firstIndex(of: name).flatMap { $0 + 1 < arguments.count ? arguments[$0 + 1] : nil }
+        }
+        guard let path = option("--translate-subtitles") else { return 2 }
+        let target = option("--target") ?? "my"
+        let source = option("--source") ?? "en"
+        let selection = option("--translator") ?? ModelCatalog.defaultTranslation
+        do {
+            let input = URL(fileURLWithPath: path)
+            let cues = try SubtitleFile.read(input)
+            print("[subtitles] \(cues.count) lines")
+            let translator = try TranslatorFactory.make(selection: selection)
+            try await translator.start()
+            let started = Date()
+            let result = try await SubtitleTranslator.translate(cues, from: source, to: target, with: translator) { progress in
+                if progress.done % 10 == 0 || progress.done == progress.total {
+                    print("[subtitles] \(progress.done)/\(progress.total)")
+                }
+            }
+            await translator.stop()
+            let output = SubtitleFile.outputURL(for: input, target: target)
+            try SubtitleFile.srt(result).write(to: output, atomically: true, encoding: .utf8)
+            print(String(format: "[subtitles] saved %@ in %.1f s", output.path, Date().timeIntervalSince(started)))
+            return 0
+        } catch {
+            print("error: \(error.localizedDescription)")
+            return 1
+        }
+    }
+}

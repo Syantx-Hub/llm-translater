@@ -16,7 +16,13 @@ For how it all works inside, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - **Two speech engines** — Apple Speech (macOS 26, built in) shows words as they're
   spoken, for English, Korean, Japanese, Chinese, French, German, Spanish and Portuguese.
   Whisper covers every other language and Auto-detect.
-- **Translate or transcribe only** — pick the mode in the main window.
+- **Translate or transcribe only** — pick the mode in the main window. Translate mode
+  shows each line once the sentence is finished.
+- **Translate subtitle files** — drop an `.srt`/`.vtt` in and get a translated file next to
+  it (`Movie.en.srt` → `Movie.my.srt`) that players load automatically. Because it's done
+  ahead of time, the subtitles appear exactly when the actors speak.
+- **Auto-detect follows the video** — switch to a video in another language and the
+  session switches with it.
 - **Caption styling** (Captions window) — font, weight, size, line spacing, colours,
   outline/shadow, background, position, width, lines on screen and how long lines stay.
   A live preview, plus "Preview on screen", shows every change as you make it.
@@ -96,6 +102,7 @@ say -o /tmp/test.aiff "Where have you been all night?"
 Subtitler=app/build/Subtitler.app/Contents/MacOS/Subtitler
 $Subtitler --file /tmp/test.aiff --source en --target my --realtime   # headless run, prints lag
 $Subtitler --file /tmp/test.aiff --responsiveness fast --translator off
+$Subtitler --translate-subtitles Movie.en.srt --target my             # translate a subtitle file
 $Subtitler --audio-probe          # permission status + 3 s capture level (never prompts)
 $Subtitler --snapshot /tmp/ui     # renders every window to PNGs, light and dark
 ```
