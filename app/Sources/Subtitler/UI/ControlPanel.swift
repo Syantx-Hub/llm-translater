@@ -230,6 +230,9 @@ struct ControlPanel: View {
                         CloudEstimateView(estimate: estimate, provider: provider,
                                           freeTier: models.cloudConfig.usesFreeTier(provider))
                     }
+                    if models.cloudProvider != nil {
+                        CharacterNotesField(file: state.syncFile)
+                    }
                 }
                 .disabled(locked)
                 timing

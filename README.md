@@ -66,9 +66,11 @@ needs only **System Audio Recording** (System Settings › Privacy & Security �
 System Audio Recording). It never sees your screen. macOS 14.0–14.1 has no audio taps,
 so there it falls back to ScreenCaptureKit, which needs Screen Recording.
 
-The default build is ad-hoc signed, so macOS asks again after each rebuild. To keep the
-grant, create a self-signed "Code Signing" certificate in Keychain Access and build with
-`SIGN_IDENTITY="<its name>" scripts/build-app.sh`. To reset the permission:
+An ad-hoc signed build looks like a new app to macOS after every rebuild, so it asks for
+permissions again (audio, and access to API keys in the Keychain). Run
+`scripts/make-dev-cert.sh` once: it creates a local "Subtitler Dev" signing certificate,
+which `build-app.sh` then uses automatically, so macOS asks once and remembers. (Or set
+`SIGN_IDENTITY` to any code-signing identity.) To reset the permission:
 
 ```sh
 tccutil reset AudioCapture com.syantxhub.subtitler     # System Audio Recording

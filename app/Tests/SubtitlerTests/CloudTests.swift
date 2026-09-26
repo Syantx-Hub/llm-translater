@@ -8,6 +8,8 @@ actor FakeBatchTranslator: BatchTranslating {
     private let quotaAfter: Int?
     private(set) var batches: [[String]] = []
     private(set) var contexts: [[String]] = []
+    private(set) var films: [FilmContext] = []
+    private(set) var castRequests = 0
 
     init(batchSize: Int = 3, quotaAfter: Int? = nil) {
         self.batchSize = batchSize
@@ -20,39 +22,46 @@ actor FakeBatchTranslator: BatchTranslating {
         "[\(target)] \(text)"
     }
 
+    func castSheet(dialogue: [String], from source: String, to target: String) async throws -> String {
+        castRequests += 1
+        return "Line 1 and Line 2 are siblings: casual."
+    }
+
     func translateBatch(_ lines: [String], from source: String, to target: String,
-                        context: [String], names: [String]) async throws -> [String] {
+                        context: [String], film: FilmContext) async throws -> [String] {
         if let quotaAfter, batches.count >= quotaAfter { throw CloudError.quotaExhausted("per day") }
         batches.append(lines)
         contexts.append(context)
+        films.append(film)
         return lines.map { "[\(target)] \($0)" }
     }
 }
 
 @Suite struct CloudEstimateTests {
     @Test func cuesToBatchesToRequestsToMinutes() {
-        // 100 sentences in batches of 30 → 4 requests; 10 requests a minute → ≥ 6 s apart.
+        // 100 sentences in batches of 30 → 4 batches + the cast sheet; 10 a minute → ≥ 6 s apart.
         let estimate = CloudEstimate(cues: 120, groups: 100, remaining: 100, batchSize: 30,
                                      limits: RateLimits(requestsPerMinute: 10, requestsPerDay: 200))
-        #expect(estimate.requests == 4)
-        #expect(estimate.seconds.lowerBound == 24) // 4 × 6 s
-        #expect(estimate.seconds.upperBound == 40) // 4 × max(7.2, 10) s
-        #expect(estimate.dailyShare == 0.02)
+        #expect(estimate.requests == 5)
+        #expect(estimate.seconds.lowerBound == 30) // 5 × 6 s
+        #expect(estimate.seconds.upperBound == 50) // 5 × max(7.2, 10) s
+        #expect(estimate.dailyShare == 0.025)
         #expect(estimate.durationText == "under a minute")
     }
 
     @Test func slowLimitsDominate() {
         let estimate = CloudEstimate(cues: 1200, groups: 1000, remaining: 1000, batchSize: 25,
                                      limits: RateLimits(requestsPerMinute: 5))
-        #expect(estimate.requests == 40)
-        #expect(estimate.seconds == 480...576) // 40 × 12 s … 40 × 14.4 s
-        #expect(estimate.durationText == "about 8–10 min")
+        #expect(estimate.requests == 41)
+        #expect(abs(estimate.seconds.lowerBound - 492) < 0.001) // 41 × 12 s
+        #expect(abs(estimate.seconds.upperBound - 590.4) < 0.001) // 41 × 14.4 s
+        #expect(estimate.durationText == "about 9–10 min")
         #expect(estimate.dailyShare == nil)
     }
 
     @Test func cachedSentencesAreNotCounted() {
         #expect(CloudEstimate(cues: 50, groups: 40, remaining: 0, batchSize: 30, limits: nil).requests == 0)
-        #expect(CloudEstimate(cues: 50, groups: 40, remaining: 31, batchSize: 30, limits: nil).requests == 2)
+        #expect(CloudEstimate(cues: 50, groups: 40, remaining: 31, batchSize: 30, limits: nil).requests == 3)
     }
 }
 
@@ -74,8 +83,10 @@ actor FakeBatchTranslator: BatchTranslating {
     }
 
     @Test func batchPromptNumbersLinesAndListsNames() {
-        let prompt = LLMPrompt.batch(["Hi, Jin.", "Where to?"], context: ["We're late."], names: ["Jin"])
+        let prompt = LLMPrompt.batch(["Hi, Jin.", "Where to?"], context: ["We're late."],
+                                     film: FilmContext(names: ["Jin"], cast: "Jin (ဂျင်): Mina's older brother; casual."))
         #expect(prompt.contains("Names in this film (keep them as names): Jin"))
+        #expect(prompt.contains("About the characters (use this for how each pair speaks to each other):\nJin (ဂျင်)"))
         #expect(prompt.contains("> We're late."))
         #expect(prompt.hasSuffix("1. Hi, Jin.\n2. Where to?"))
     }
@@ -190,10 +201,25 @@ actor FakeBatchTranslator: BatchTranslating {
 
     @Test func batchesWithContext() async throws {
         let translator = FakeBatchTranslator(batchSize: 3)
-        let result = try await SubtitleTranslator.translate(cues(7), from: "en", to: "my", with: translator) { _ in }
+        let result = try await SubtitleTranslator.translate(cues(7), from: "en", to: "my", with: translator,
+                                                            notes: "Line 7 is the boss.") { _ in }
         #expect(result.count == 7)
         #expect(await translator.batches.map(\.count) == [3, 3, 1])
         #expect(await translator.contexts[1] == ["Line 1.", "Line 2.", "Line 3."])
+        // One cast-sheet request for the whole file; it and the viewer's notes go with every batch.
+        #expect(await translator.castRequests == 1)
+        let film = await translator.films[2]
+        #expect(film.cast.contains("siblings: casual"))
+        #expect(film.cast.hasSuffix("From the viewer (trust this over the above):\nLine 7 is the boss."))
+    }
+
+    @Test func castRequestSamplesALongScript() {
+        let dialogue = (1...5000).map { "Line number \($0) of a long film." }
+        let request = LLMPrompt.castRequest(dialogue, maxCharacters: 2000)
+        #expect(request.count < 2600)
+        #expect(request.contains("(a sample)"))
+        #expect(request.contains("Line number 1 of"))
+        #expect(!LLMPrompt.castRequest(["Hi.", "Bye."]).contains("sample"))
     }
 
     @Test func quotaStopSavesPartialAndNextRunResumes() async throws {
@@ -221,7 +247,7 @@ actor FakeBatchTranslator: BatchTranslating {
         let existing = SyncTranslations.existingTranslations(for: input, cues: cues, sentences: sentences, target: "my")
         #expect(existing.count == 6)
         let estimate = CloudEstimate(cues: 8, groups: 8, remaining: 8 - existing.count, batchSize: 3, limits: nil)
-        #expect(estimate.requests == 1)
+        #expect(estimate.requests == 2) // one batch + the cast sheet
         let translator = FakeBatchTranslator(batchSize: 3)
         let result = try await SubtitleTranslator.translate(cues, from: "en", to: "my", with: translator,
                                                             existing: existing) { _ in }
@@ -352,7 +378,7 @@ actor FakeBatchTranslator: BatchTranslating {
             if user.contains("Translate these 2 lines") { return (self.reply("1. B\n2. C"), ok) }
             return (self.reply("A"), ok)
         }
-        let result = try await translator.translateBatch(["one", "two", "three"], from: "en", to: "my", context: [], names: [])
+        let result = try await translator.translateBatch(["one", "two", "three"], from: "en", to: "my", context: [], film: FilmContext())
         #expect(result == ["A", "B", "C"])
         #expect(sent.values.count == 3)
     }

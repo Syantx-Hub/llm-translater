@@ -1,0 +1,24 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:llm_translater}/app",
+            "name": "Debug Subtitler (app)",
+            "target": "Subtitler",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug Subtitler (app)"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:llm_translater}/app",
+            "name": "Release Subtitler (app)",
+            "target": "Subtitler",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release Subtitler (app)"
+        }
+    ]
+}

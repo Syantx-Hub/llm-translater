@@ -51,6 +51,10 @@ struct SubtitleFileView: View {
                                                          limits: models.cloudConfig.limits(for: provider)),
                                   provider: provider, freeTier: models.cloudConfig.usesFreeTier(provider))
             }
+            if models.cloudProvider != nil, job.input != nil, !isFinished {
+                CharacterNotesField(file: job.input)
+                    .disabled(job.isWorking)
+            }
 
             status
         }

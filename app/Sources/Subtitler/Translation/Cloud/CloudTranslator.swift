@@ -47,20 +47,27 @@ actor CloudTranslator: BatchTranslating {
     /// One request per batch. If the reply doesn't have one numbered line per input, the
     /// batch is split in half and retried, down to single lines.
     func translateBatch(_ lines: [String], from source: String, to target: String,
-                        context: [String], names: [String]) async throws -> [String] {
+                        context: [String], film: FilmContext) async throws -> [String] {
         guard lines.count > 1 else {
             return [try await translate(lines[0], from: source, to: target, context: context)]
         }
         let reply = try await complete(CloudAdapter.Prompt(
             system: LLMPrompt.system(from: source, to: target),
-            user: LLMPrompt.batch(lines, context: context, names: names)))
+            user: LLMPrompt.batch(lines, context: context, film: film)))
         if let parsed = LLMPrompt.parseNumbered(reply, count: lines.count) { return parsed }
         Trace.log("cloud: \(lines.count)-line reply didn't line up; splitting")
         let half = lines.count / 2
-        let first = try await translateBatch(Array(lines[..<half]), from: source, to: target, context: context, names: names)
+        let first = try await translateBatch(Array(lines[..<half]), from: source, to: target, context: context, film: film)
         let second = try await translateBatch(Array(lines[half...]), from: source, to: target,
-                                              context: context + lines[..<half], names: names)
+                                              context: context + lines[..<half], film: film)
         return first + second
+    }
+
+    func castSheet(dialogue: [String], from source: String, to target: String) async throws -> String {
+        let reply = try await complete(CloudAdapter.Prompt(
+            system: LLMPrompt.castSystem(from: source, to: target),
+            user: LLMPrompt.castRequest(dialogue), maxTokens: 4096))
+        return reply.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// The one-line request behind the Test button: checks the key, model and address.

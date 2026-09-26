@@ -17,6 +17,17 @@ be told anything. That causes three visible problems:
 | Formal speech between friends | No idea who is talking to whom | The earlier lines, so it can infer the relationship and choose the register |
 | A pause splits one sentence | Each half is a "sentence" | Split cues are joined first (`SubtitleSentences`), and neighbours are visible anyway |
 
+### Relationships: the cast sheet
+
+Choosing casual or polite speech (in Burmese: တယ် vs. ပါတယ်, which pronoun) needs to
+know how two characters relate, and 6 earlier lines rarely show that. So before
+translating, one extra request sends the whole script (a long one is sampled evenly) and
+asks for a **cast sheet**: each main character, their name in the target script, and for
+each important pair how they relate and how they should speak to each other, "unclear"
+rather than a guess. The sheet goes with every batch. The viewer can add their own notes
+("Mina and Jin-woo are siblings; Mr. Park is their boss"), saved per subtitle file, and
+they're marked as trusted over the model's guesses.
+
 This is **prompt engineering plus context engineering**: the rules (system prompt), the
 situation (earlier lines), and the facts (names glossary) are all input the model uses.
 
@@ -79,6 +90,7 @@ exactly what would be sent. Provider quirks (checked against each provider's doc
 | Rule | Why |
 |---|---|
 | Keys only in the Keychain: generic password, `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`, not synchronizable | Encrypted at rest, unreadable while the Mac is locked, never copied to iCloud or other devices. UserDefaults, `.env` and plist files are plain text anyone (or any backup) can read. |
+| Whether a key is saved, and its `••••1234` ending, come from the Keychain item's attributes; the key's data is read only when sending a request | Reading a login-keychain item's data can ask the user's permission; attributes never do. |
 | Read the key per request, never kept in `@Published` or long-lived properties | Less time in memory, and nothing SwiftUI might snapshot, persist or show. The typed key lives in a non-published draft that's cleared on save or when the window closes. |
 | Show only `••••1234`, with Replace and Remove | Shoulder-surfing and screenshots. The last four characters are enough to tell keys apart. Remove deletes the Keychain item. |
 | Key in the auth header, never the URL (Gemini too: `x-goog-api-key`) | URLs end up in logs, proxies, crash reports and error messages. |

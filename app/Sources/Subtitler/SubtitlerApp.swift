@@ -118,6 +118,31 @@ final class WindowRouter {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// A menu bar app has no Dock icon and isn't in Cmd+Tab. While one of its windows is
+    /// open (main, Models, Captions, …) it becomes a regular app, so Cmd+Tab can get back
+    /// to it; when the last one closes it goes back to living in the menu bar.
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        let center = NotificationCenter.default
+        for name in [NSWindow.didBecomeKeyNotification, NSWindow.willCloseNotification, NSWindow.didMiniaturizeNotification] {
+            center.addObserver(forName: name, object: nil, queue: .main) { note in
+                let closing = name == NSWindow.willCloseNotification ? note.object as? NSWindow : nil
+                MainActor.assumeIsolated { Self.updateActivationPolicy(ignoring: closing) }
+            }
+        }
+    }
+
+    @MainActor
+    static func updateActivationPolicy(ignoring closing: NSWindow? = nil) {
+        let hasWindow = NSApp.windows.contains { window in
+            window !== closing && window.isVisible && !(window is NSPanel) && window.styleMask.contains(.titled)
+                && window.level == .normal
+        }
+        let policy: NSApplication.ActivationPolicy = hasWindow ? .regular : .accessory
+        guard NSApp.activationPolicy() != policy else { return }
+        NSApp.setActivationPolicy(policy)
+        if policy == .regular { NSApp.activate(ignoringOtherApps: true) }
+    }
+
     /// Opening the app again (Spotlight, Finder, `open`) shows its window. A menu bar
     /// icon alone is easy to miss, especially behind the notch.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {

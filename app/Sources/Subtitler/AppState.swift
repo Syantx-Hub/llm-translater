@@ -623,7 +623,8 @@ extension AppState {
         syncTranslations = syncLanguage == target
             ? nil
             : SyncTranslations(cues: syncCues, sentences: sentences, translator: translator,
-                               source: syncLanguage, target: target, existing: existing, cacheURL: cacheURL) { status in
+                               source: syncLanguage, target: target, existing: existing, cacheURL: cacheURL,
+                               notes: CharacterNotes.get(for: syncFile)) { status in
                 Task { @MainActor [weak self] in
                     guard let self, self.session == id else { return }
                     self.syncCloudStatus = status

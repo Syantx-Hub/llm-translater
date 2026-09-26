@@ -1,5 +1,14 @@
 import Foundation
 
+/// What a translator should know about the whole film, sent with every batch.
+struct FilmContext: Sendable, Equatable {
+    /// Names that recur, to keep as names.
+    var names: [String] = []
+    /// Who the characters are to each other and how they speak (casual or polite): the
+    /// model's cast sheet from reading the whole script, plus the viewer's own notes.
+    var cast = ""
+}
+
 /// Engines that translate many lines per request with context (LLMs). Batching keeps a
 /// film to a few dozen requests, and lets the model see who is talking to whom.
 protocol BatchTranslating: Translator {
@@ -7,7 +16,24 @@ protocol BatchTranslating: Translator {
     var batchSize: Int { get }
     /// Returns exactly one translation per line, in order.
     func translateBatch(_ lines: [String], from source: String, to target: String,
-                        context: [String], names: [String]) async throws -> [String]
+                        context: [String], film: FilmContext) async throws -> [String]
+    /// Reads the whole script once and describes the characters and their relationships,
+    /// so every batch uses the right register between each pair.
+    func castSheet(dialogue: [String], from source: String, to target: String) async throws -> String
+}
+
+extension FilmContext {
+    /// Everything known about the film before translating: names found on device, the
+    /// model's cast sheet (one request; skipped if it fails), and the viewer's notes.
+    static func prepare(cues: [SubtitleCue], from source: String, to target: String,
+                        with batcher: BatchTranslating, notes: String) async -> FilmContext {
+        let dialogue = cues.map { SubtitleFile.plainText($0.text) }
+        let sheet = (try? await batcher.castSheet(dialogue: dialogue, from: source, to: target)) ?? ""
+        let viewer = notes.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cast = [sheet, viewer.isEmpty ? "" : "From the viewer (trust this over the above):\n" + viewer]
+            .filter { !$0.isEmpty }.joined(separator: "\n")
+        return FilmContext(names: NameGlossary.names(in: dialogue), cast: cast)
+    }
 }
 
 /// Translating a subtitle file's sentence groups, resumably: whatever is done is kept,
@@ -33,20 +59,21 @@ enum SentenceTranslation {
     ///   - onStep: called after every request with everything translated so far.
     static func run(order: [Int], cues: [SubtitleCue], sentences: SubtitleSentences,
                     from source: String, to target: String, with translator: Translator,
-                    done initial: [Int: String] = [:],
+                    done initial: [Int: String] = [:], notes: String = "",
                     onStep: @Sendable (Step) async -> Void = { _ in }) async throws -> [Int: String] {
         var done = initial
         var requests = 0
         let pending = order.filter { done[$0] == nil }
         do {
             if let batcher = translator as? BatchTranslating {
-                let names = NameGlossary.names(in: cues.map { SubtitleFile.plainText($0.text) })
+                let film = pending.isEmpty ? FilmContext()
+                    : await FilmContext.prepare(cues: cues, from: source, to: target, with: batcher, notes: notes)
                 for batch in batches(pending, size: batcher.batchSize) {
                     try Task.checkCancellation()
                     let lines = batch.map { sentences.text(of: $0, in: cues) }
                     let context = (max(0, batch[0] - contextLines)..<batch[0]).map { sentences.text(of: $0, in: cues) }
                     let translations = try await batcher.translateBatch(lines, from: source, to: target,
-                                                                        context: context, names: names)
+                                                                        context: context, film: film)
                     for (group, translation) in zip(batch, translations) { done[group] = translation }
                     requests += 1
                     await onStep(Step(done: done, requestsDone: requests))
@@ -116,7 +143,8 @@ struct CloudEstimate: Equatable {
         self.cues = cues
         self.groups = groups
         self.remaining = remaining
-        let requests = remaining == 0 ? 0 : Int((Double(remaining) / Double(max(batchSize, 1))).rounded(.up))
+        // The batches, plus one request for the cast sheet.
+        let requests = remaining == 0 ? 0 : Int((Double(remaining) / Double(max(batchSize, 1))).rounded(.up)) + 1
         self.requests = requests
         // Requests go one after another: each takes a few seconds for a batch reply, and a
         // requests-per-minute limit spaces them out further.
@@ -142,4 +170,19 @@ struct CloudEstimate: Equatable {
 struct RateLimits: Hashable, Sendable {
     var requestsPerMinute: Int?
     var requestsPerDay: Int?
+}
+
+/// The viewer's notes about a film's characters ("Mina and Jin-woo are siblings"), kept per
+/// subtitle file name so they're there next time. Not secret; stored in UserDefaults.
+enum CharacterNotes {
+    static func key(_ file: URL) -> String { "characterNotes." + file.deletingPathExtension().lastPathComponent }
+
+    static func get(for file: URL?, defaults: UserDefaults = .standard) -> String {
+        file.flatMap { defaults.string(forKey: key($0)) } ?? ""
+    }
+
+    static func set(_ notes: String, for file: URL?, defaults: UserDefaults = .standard) {
+        guard let file else { return }
+        defaults.set(notes, forKey: key(file))
+    }
 }

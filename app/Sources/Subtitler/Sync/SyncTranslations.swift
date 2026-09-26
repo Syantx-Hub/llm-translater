@@ -26,19 +26,22 @@ actor SyncTranslations {
     private var stopped = false
     /// Where a whole-file run saves what it has, so later runs send nothing.
     private let cacheURL: URL?
+    /// The viewer's notes about the characters, for batch engines.
+    private let notes: String
     private let onStatus: @Sendable (Status) -> Void
 
     /// - Parameters:
     ///   - existing: translations already on disk (from Save Translated Copy), by group.
     ///   - cacheURL: for batch (cloud) engines, the file to keep translations in.
     init(cues: [SubtitleCue], sentences: SubtitleSentences, translator: Translator, source: String, target: String,
-         existing: [Int: String] = [:], cacheURL: URL? = nil, onStatus: @escaping @Sendable (Status) -> Void = { _ in }) {
+         existing: [Int: String] = [:], cacheURL: URL? = nil, notes: String = "", onStatus: @escaping @Sendable (Status) -> Void = { _ in }) {
         self.cues = cues
         self.sentences = sentences
         self.translator = translator
         self.source = source
         self.target = target
         self.cacheURL = cacheURL
+        self.notes = notes
         self.onStatus = onStatus
         done = existing
     }
@@ -77,14 +80,14 @@ actor SyncTranslations {
     /// the start), so a seek moves the work to the new position.
     private func workWholeFile() async {
         guard let batcher = translator as? BatchTranslating else { return }
-        let names = NameGlossary.names(in: cues.map { SubtitleFile.plainText($0.text) })
+        let film = await FilmContext.prepare(cues: cues, from: source, to: target, with: batcher, notes: notes)
         let total = sentences.groups.count
         while let batch = nextBatch(size: batcher.batchSize) {
             onStatus(.translating(done: done.count, total: total, requests: requests))
             let lines = batch.map { sentences.text(of: $0, in: cues) }
             let context = (max(0, batch[0] - SentenceTranslation.contextLines)..<batch[0]).map { sentences.text(of: $0, in: cues) }
             do {
-                let translations = try await batcher.translateBatch(lines, from: source, to: target, context: context, names: names)
+                let translations = try await batcher.translateBatch(lines, from: source, to: target, context: context, film: film)
                 for (group, translation) in zip(batch, translations) { done[group] = translation }
                 requests += 1
                 cursor = batch.last! + 1

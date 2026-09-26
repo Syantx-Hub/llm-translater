@@ -37,11 +37,14 @@ enum LLMPrompt {
         return message + "Translate this line:\n\(text)"
     }
 
-    /// A numbered batch, with earlier lines and the film's names.
-    static func batch(_ lines: [String], context: [String], names: [String]) -> String {
+    /// A numbered batch, with earlier lines, the film's names and its cast sheet.
+    static func batch(_ lines: [String], context: [String], film: FilmContext) -> String {
         var message = ""
-        if !names.isEmpty {
-            message += "Names in this film (keep them as names): \(names.joined(separator: ", "))\n\n"
+        if !film.cast.isEmpty {
+            message += "About the characters (use this for how each pair speaks to each other):\n\(film.cast)\n\n"
+        }
+        if !film.names.isEmpty {
+            message += "Names in this film (keep them as names): \(film.names.joined(separator: ", "))\n\n"
         }
         if !context.isEmpty {
             message += "Earlier lines, for context only (don't translate them):\n"
@@ -50,6 +53,33 @@ enum LLMPrompt {
         message += "Translate these \(lines.count) lines. Reply with exactly \(lines.count) lines, each starting with its number, like \"1. …\":\n"
         message += lines.enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n")
         return message
+    }
+
+    // MARK: Cast sheet
+
+    static func castSystem(from source: String, to target: String) -> String {
+        let to = Languages.name(target)
+        return """
+        You help a subtitle translator working into \(to). Read a film's dialogue and describe its characters and how they relate, so the translation uses the right register between each pair.
+        Reply with at most 15 short lines, nothing else:
+        - One line per main character: the name as written, then in \(to) script, and who they are (e.g. "Kim Ki-taek (ကင်မ်ကီတက်): father of Ki-woo and Ki-jung").
+        - One line per important pair: how they relate and how they should speak to each other in \(to) (casual or polite, and the pronouns or endings to use).
+        If something isn't clear from the dialogue, say "unclear" rather than guessing.
+        """
+    }
+
+    /// Dialogue capped to fit one request: a long film is sampled evenly, so every part of
+    /// the story is represented.
+    static func castRequest(_ dialogue: [String], maxCharacters: Int = 24_000) -> String {
+        let lines = dialogue.filter { !$0.isEmpty }
+        var chosen = lines
+        let total = lines.reduce(0) { $0 + $1.count + 1 }
+        if total > maxCharacters {
+            let keep = max(1, lines.count * maxCharacters / total)
+            let step = Double(lines.count) / Double(keep)
+            chosen = (0..<keep).map { lines[Int(Double($0) * step)] }
+        }
+        return "The film's dialogue\(chosen.count < lines.count ? " (a sample)" : ""), in order:\n" + chosen.joined(separator: "\n")
     }
 
     /// Maps "1. …" lines back to the inputs; nil unless every number 1…count is there

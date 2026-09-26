@@ -28,6 +28,11 @@ done
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_DIR="$ROOT/app"
 APP="$APP_DIR/build/Subtitler.app"
+# A stable identity keeps permissions across rebuilds: SIGN_IDENTITY, else the local
+# "Subtitler Dev" certificate from scripts/make-dev-cert.sh, else ad-hoc.
+if [[ -z "${SIGN_IDENTITY:-}" ]] && security find-certificate -c "Subtitler Dev" >/dev/null 2>&1; then
+  SIGN_IDENTITY="Subtitler Dev"
+fi
 IDENTITY="${SIGN_IDENTITY:--}"
 
 cd "$APP_DIR"
