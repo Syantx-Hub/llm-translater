@@ -64,4 +64,9 @@ enum Languages {
     static func isSupported(_ code: String) -> Bool {
         all.contains { $0.code == code }
     }
+
+    /// "my" → "Burmese"; unknown codes are returned as they are.
+    static func name(_ code: String) -> String {
+        all.first { $0.code == code }?.name ?? code
+    }
 }

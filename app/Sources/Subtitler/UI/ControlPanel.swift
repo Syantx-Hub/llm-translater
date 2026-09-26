@@ -221,14 +221,7 @@ struct ControlPanel: View {
         Label(text, systemImage: icon)
     }
 
-    private var translationName: String {
-        let selection = models.selectedTranslation
-        if selection == ModelStore.translationOff { return "No translation (original text)" }
-        if selection.hasPrefix(ModelStore.sidecarPrefix) {
-            return SidecarEngine(rawValue: String(selection.dropFirst(ModelStore.sidecarPrefix.count)))?.label ?? selection
-        }
-        return models.translationModel?.name ?? "Translation model not downloaded"
-    }
+    private var translationName: String { models.translationName }
 
     private func show(_ window: String) {
         openWindow(id: window)

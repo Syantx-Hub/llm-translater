@@ -113,7 +113,15 @@ import Testing
         let task = Task { try await SubtitleTranslator.translate(cues, from: "en", to: "my", with: translator) { _ in } }
         try? await Task.sleep(for: .milliseconds(60))
         task.cancel()
-        await #expect(throws: CancellationError.self) { _ = try await task.value }
+        do {
+            _ = try await task.value
+            Issue.record("expected the run to stop")
+        } catch let stopped as SubtitleTranslator.Stopped {
+            #expect(stopped.underlying is CancellationError)
+            #expect(stopped.translated == stopped.cues.count)
+        } catch {
+            Issue.record("unexpected \(error)")
+        }
         #expect(await translator.calls.count < 50)
     }
 }

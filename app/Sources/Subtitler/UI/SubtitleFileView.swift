@@ -85,13 +85,13 @@ struct SubtitleFileView: View {
             if state.isRunning || state.isBusy {
                 Label("Stop live subtitles first — both need the translation model's memory.", systemImage: "info.circle")
                     .font(.callout).foregroundStyle(.secondary)
-            } else if models.translationModel == nil {
+            } else if !models.translationReady {
                 Label("Download a translation model in Models first.", systemImage: "exclamationmark.triangle")
                     .font(.callout).foregroundStyle(.orange)
             }
         case .preparing:
             ProgressView("Loading the translation model…").progressViewStyle(.linear)
-        case .translating(let done, let total, let secondsLeft):
+        case .translating(let done, let total, _, let secondsLeft):
             ProgressView(value: Double(done), total: Double(max(total, 1))) {
                 Text("Translating \(done) of \(total) lines")
             } currentValueLabel: {
@@ -100,6 +100,8 @@ struct SubtitleFileView: View {
         case .finished(let url):
             Label("Saved \(url.lastPathComponent)", systemImage: "checkmark.circle.fill")
                 .foregroundStyle(.green)
+        case .partial(_, let message):
+            Label(message, systemImage: "pause.circle").foregroundStyle(.secondary)
         case .failed(let message):
             Label(message, systemImage: "exclamationmark.triangle").foregroundStyle(.red)
         }
@@ -108,6 +110,9 @@ struct SubtitleFileView: View {
     private var actions: some View {
         HStack {
             if case .finished(let url) = job.phase {
+                Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+                Button("Translate Another") { job.reset() }
+            } else if case .partial(let url, _) = job.phase {
                 Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
                 Button("Translate Another") { job.reset() }
             }
@@ -126,12 +131,15 @@ struct SubtitleFileView: View {
     }
 
     private var canStart: Bool {
-        guard case .loaded = job.phase else { return false }
-        return models.translationModel != nil && !state.isRunning && !state.isBusy
+        switch job.phase {
+        case .loaded, .partial: break
+        default: return false
+        }
+        return models.translationReady && !state.isRunning && !state.isBusy
     }
 
     private var translatorName: String {
-        models.translationModel?.name ?? "None downloaded"
+        models.translationName
     }
 
     private func chooseFile() {

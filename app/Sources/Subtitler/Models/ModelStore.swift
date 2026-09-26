@@ -14,6 +14,8 @@ final class ModelStore: ObservableObject {
     /// Legacy translation selection from builds before transcribe-only was a mode.
     nonisolated static let translationOff = "off"
     nonisolated static let sidecarPrefix = "sidecar:"
+    /// "cloud:<provider id>": translate with a cloud (or local OpenAI-compatible) LLM.
+    nonisolated static let cloudPrefix = "cloud:"
 
     @Published private(set) var status: [String: Status] = [:]
     @Published var selectedSpeech: String? { didSet { defaults.set(selectedSpeech, forKey: "selectedSpeech") } }
@@ -27,10 +29,17 @@ final class ModelStore: ObservableObject {
     let legacyTranscribeOnly: Bool
 
     private let defaults: UserDefaults
+    /// API keys; the Keychain in the app, in memory in tests and snapshots.
+    let secrets: SecretStore
+    var cloudConfig: CloudConfig { CloudConfig(defaults: defaults) }
+    /// Cloud providers ready to use (key saved), and the masked keys ("••••1234").
+    @Published private(set) var configuredCloud: [CloudProvider] = []
+    @Published private(set) var keyHints: [String: String] = [:]
     private var downloads: [String: (attempt: UUID, task: Task<Void, Never>)] = [:]
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard, secrets: SecretStore = KeychainStore.app) {
         self.defaults = defaults
+        self.secrets = secrets
         let stored = defaults.string(forKey: "selectedTranslation")
         legacyTranscribeOnly = stored == Self.translationOff
         selectedSpeech = defaults.string(forKey: "selectedSpeech")
@@ -41,6 +50,61 @@ final class ModelStore: ObservableObject {
         }
         ModelFiles.removeAbandonedDownloads()
         refresh()
+        refreshCloud()
+    }
+
+    // MARK: Cloud
+
+    /// The selected cloud provider, if translation is set to one.
+    var cloudProvider: CloudProvider? {
+        guard selectedTranslation.hasPrefix(Self.cloudPrefix) else { return nil }
+        return CloudProvider.provider(String(selectedTranslation.dropFirst(Self.cloudPrefix.count)))
+    }
+
+    /// Something can translate: a downloaded model, a configured cloud engine, or the sidecar.
+    var translationReady: Bool {
+        if let cloudProvider { return configuredCloud.contains(cloudProvider) }
+        return translationModel != nil || selectedTranslation.hasPrefix(Self.sidecarPrefix)
+    }
+
+    var translationName: String {
+        if let cloudProvider {
+            let model = cloudConfig.model(for: cloudProvider)
+            let label = cloudProvider.model(model)?.label ?? model
+            return configuredCloud.contains(cloudProvider) ? "\(cloudProvider.name) · \(label)" : "\(cloudProvider.name) (not set up)"
+        }
+        if selectedTranslation.hasPrefix(Self.sidecarPrefix) {
+            return SidecarEngine(rawValue: String(selectedTranslation.dropFirst(Self.sidecarPrefix.count)))?.label
+                ?? selectedTranslation
+        }
+        return translationModel?.name ?? "Translation model not downloaded"
+    }
+
+    /// Re-reads which providers have keys. Only masked hints are kept, never the keys.
+    func refreshCloud() {
+        let config = cloudConfig
+        configuredCloud = CloudProvider.all.filter { config.isConfigured($0, secrets: secrets) }
+        keyHints = Dictionary(uniqueKeysWithValues: CloudProvider.all.compactMap { provider in
+            secrets.hint(provider.id).map { (provider.id, $0) }
+        })
+    }
+
+    func saveKey(_ key: String, for provider: CloudProvider) throws {
+        let key = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { return }
+        try secrets.save(key, for: provider.id)
+        refreshCloud()
+    }
+
+    func removeKey(for provider: CloudProvider) throws {
+        try secrets.delete(provider.id)
+        if cloudProvider == provider, inUse.isEmpty { selectedTranslation = ModelCatalog.defaultTranslation }
+        refreshCloud()
+    }
+
+    func selectCloud(_ provider: CloudProvider) {
+        guard inUse.isEmpty else { return }
+        selectedTranslation = Self.cloudPrefix + provider.id
     }
 
     var speechModel: ModelInfo? {

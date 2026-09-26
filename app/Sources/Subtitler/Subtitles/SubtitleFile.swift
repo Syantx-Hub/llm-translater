@@ -109,17 +109,23 @@ enum SubtitleFile {
     private static let languageSuffixes = Set(Languages.all.map(\.code))
         .union(["eng", "kor", "jpn", "chi", "zho", "chs", "cht", "mya", "bur", "tha", "vie", "spa", "fre", "fra", "ger", "deu"])
 
-    static func outputURL(for input: URL, target: String) -> URL {
-        let folder = input.deletingLastPathComponent()
-        var base = input.deletingPathExtension().lastPathComponent
+    /// "Movie.en.srt" → "Movie.my.srt", whether or not it exists: where a translation of
+    /// this file is looked for, and continued.
+    static func translationURL(for input: URL, target: String) -> URL {
+        let base = input.deletingPathExtension().lastPathComponent
         let parts = base.split(separator: ".")
-        if parts.count > 1, let last = parts.last?.lowercased(), languageSuffixes.contains(last) {
-            base = parts.dropLast().joined(separator: ".")
-        }
-        var candidate = folder.appendingPathComponent("\(base).\(target).srt")
+        let stem = parts.count > 1 && parts.last.map({ languageSuffixes.contains($0.lowercased()) }) == true
+            ? parts.dropLast().joined(separator: ".") : base
+        return input.deletingLastPathComponent().appendingPathComponent("\(stem).\(target).srt")
+    }
+
+    static func outputURL(for input: URL, target: String) -> URL {
+        let first = translationURL(for: input, target: target)
+        let base = first.deletingPathExtension().lastPathComponent
+        var candidate = first
         var copy = 2
         while FileManager.default.fileExists(atPath: candidate.path) {
-            candidate = folder.appendingPathComponent("\(base).\(target) \(copy).srt")
+            candidate = first.deletingLastPathComponent().appendingPathComponent("\(base) \(copy).srt")
             copy += 1
         }
         return candidate

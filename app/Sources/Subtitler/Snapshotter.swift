@@ -9,7 +9,8 @@ import SwiftUI
 enum Snapshotter {
     static func run(into directory: String) {
         _ = NSApplication.shared
-        let models = ModelStore()
+        // Never the real Keychain: a snapshot must not show whether keys exist.
+        let models = ModelStore(secrets: MemorySecretStore())
         let style = CaptionStyle()
         let state = AppState(models: models, style: style)
         let out = URL(fileURLWithPath: directory, isDirectory: true)

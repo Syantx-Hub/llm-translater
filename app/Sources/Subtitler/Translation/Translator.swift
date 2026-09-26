@@ -1,7 +1,7 @@
 import Foundation
 
-/// A translation engine. Implementations can be local sidecars, native models, or a
-/// cloud "high quality" mode later — the pipeline only sees this protocol.
+/// A translation engine: a native model (MADLAD), a cloud or local LLM, or a developer
+/// sidecar. The pipeline only sees this protocol.
 protocol Translator: Sendable {
     func start() async throws
     /// - Parameter context: the previous few source lines, for consistent names and pronouns.
@@ -34,19 +34,31 @@ enum SidecarEngine: String, CaseIterable, Identifiable {
 enum TranslatorSelectionError: LocalizedError {
     case notInstalled(String)
     case sidecarUnavailable
+    case cloudNotSetUp(String)
 
     var errorDescription: String? {
         switch self {
         case .notInstalled(let name): "\(name) is not downloaded yet. Open Models to download it."
         case .sidecarUnavailable: "The Python translation sidecar is not available in this build."
+        case .cloudNotSetUp(let name): "\(name) isn't set up yet. Add it in Models › Cloud."
         }
     }
 }
 
 enum TranslatorFactory {
-    /// - Parameter selection: a catalog model id, "sidecar:<engine>", or "off".
-    static func make(selection: String) throws -> Translator {
+    /// - Parameter selection: a catalog model id, "cloud:<provider>", "sidecar:<engine>", or "off".
+    static func make(selection: String, defaults: UserDefaults = .standard,
+                     secrets: SecretStore = KeychainStore.app) throws -> Translator {
         if selection == ModelStore.translationOff { return PassthroughTranslator() }
+        if selection.hasPrefix(ModelStore.cloudPrefix) {
+            let id = String(selection.dropFirst(ModelStore.cloudPrefix.count))
+            guard let provider = CloudProvider.provider(id) else { throw TranslatorSelectionError.cloudNotSetUp(id) }
+            let config = CloudConfig(defaults: defaults)
+            guard config.isConfigured(provider, secrets: secrets) else {
+                throw TranslatorSelectionError.cloudNotSetUp(provider.name)
+            }
+            return try config.translator(for: provider, secrets: secrets, onEvent: { CloudActivity.post($0) })
+        }
         if selection.hasPrefix(ModelStore.sidecarPrefix) {
             let name = String(selection.dropFirst(ModelStore.sidecarPrefix.count))
             guard let engine = SidecarEngine(rawValue: name), let location = SidecarLocation.resolve() else {

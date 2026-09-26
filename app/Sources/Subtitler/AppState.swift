@@ -140,6 +140,8 @@ final class AppState: ObservableObject {
     private var sync: SubtitleSync?
     private var syncTranslations: SyncTranslations?
     private var syncSentences: SubtitleSentences?
+    /// A cloud engine translating the whole file: progress, or why it stopped.
+    @Published private(set) var syncCloudStatus: SyncTranslations.Status?
     /// Moves the file's clock, in seconds: positive shows subtitles earlier. Applies live.
     @Published var syncOffset: Double { didSet { save(syncOffset, "syncOffset"); updateSyncedCaptions() } }
     private var syncTimer: Task<Void, Never>?
@@ -489,6 +491,7 @@ final class AppState: ObservableObject {
         sync = nil
         syncTranslations = nil
         syncSentences = nil
+        syncCloudStatus = nil
         syncStatus = nil
         sessionCaptionLanguage = nil
         models.inUse = []
@@ -579,6 +582,18 @@ extension AppState {
         }
     }
 
+    /// What a cloud engine would send for the loaded file, shown before Start; nil when
+    /// no cloud engine is selected.
+    func syncEstimate(models: ModelStore) -> CloudEstimate? {
+        guard let provider = models.cloudProvider, let file = syncFile, !syncCues.isEmpty,
+              syncLanguage != targetLanguage else { return nil }
+        let sentences = SubtitleSentences(cues: syncCues)
+        let cached = SyncTranslations.existingTranslations(for: file, cues: syncCues, sentences: sentences, target: targetLanguage)
+        return CloudEstimate(cues: syncCues.count, groups: sentences.groups.count,
+                             remaining: sentences.groups.count - cached.count, batchSize: CloudTranslator.defaultBatchSize,
+                             limits: models.cloudConfig.limits(for: provider))
+    }
+
     /// Loads subtitle text downloaded from OpenSubtitles, saved under Application Support.
     func loadDownloadedSubtitles(_ text: String, named name: String) throws -> URL {
         let folder = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -600,10 +615,20 @@ extension AppState {
         let existing = syncFile.map {
             SyncTranslations.existingTranslations(for: $0, cues: syncCues, sentences: sentences, target: target)
         } ?? [:]
+        // A cloud engine translates the whole file and keeps it next to the subtitles, so
+        // watching again sends nothing.
+        let cacheURL = translator is BatchTranslating
+            ? syncFile.flatMap { SyncTranslations.cacheURL(for: $0, cues: syncCues, sentences: sentences, target: target) }
+            : nil
         syncTranslations = syncLanguage == target
             ? nil
             : SyncTranslations(cues: syncCues, sentences: sentences, translator: translator,
-                               source: syncLanguage, target: target, existing: existing)
+                               source: syncLanguage, target: target, existing: existing, cacheURL: cacheURL) { status in
+                Task { @MainActor [weak self] in
+                    guard let self, self.session == id else { return }
+                    self.syncCloudStatus = status
+                }
+            }
         let silence = PlaybackSilenceDetector()
         silence.onChange = { [weak self] silent, since in
             DispatchQueue.main.async {

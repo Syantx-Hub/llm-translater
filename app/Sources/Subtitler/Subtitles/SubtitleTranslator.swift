@@ -3,56 +3,65 @@ import Foundation
 /// Translates a subtitle file ahead of time. Unlike live captions there's no rush, so
 /// the translation can appear exactly when the actor speaks — the file keeps its timing.
 enum SubtitleTranslator {
-    struct Progress: Sendable {
+    struct Progress: Sendable, Equatable {
+        /// Sentences translated (including ones cached from an earlier run).
         let done: Int
         let total: Int
-        /// Estimated seconds left, once a few cues have been timed.
+        /// Requests sent so far this run.
+        let requests: Int
+        /// Estimated seconds left, once a few requests have been timed.
         let secondsLeft: TimeInterval?
+    }
+
+    /// Stopped early (quota, network, cancel); `cues` holds what was translated, to save.
+    struct Stopped: Error {
+        let cues: [SubtitleCue]
+        let translated: Int
+        let total: Int
+        let underlying: Error
     }
 
     /// Translates the file sentence by sentence: cues that split one sentence are joined
     /// (`SubtitleSentences`) and become one cue spanning them, so the translation reads as
-    /// a whole sentence. Other cues keep their timing. Identical lines ("Yes.", "What?") are
-    /// translated once. Cancelling the calling task stops early with CancellationError.
+    /// a whole sentence. Other cues keep their timing. `existing` translations (by sentence
+    /// group, from an earlier partial run) are kept, so only the rest is translated.
     static func translate(_ cues: [SubtitleCue], from source: String, to target: String, with translator: Translator,
-                          progress: @Sendable (Progress) -> Void) async throws -> [SubtitleCue] {
+                          existing: [Int: String] = [:],
+                          progress: @escaping @Sendable (Progress) -> Void) async throws -> [SubtitleCue] {
         let sentences = SubtitleSentences(cues: cues)
-        var translated: [SubtitleCue] = []
-        var cache: [String: String] = [:]
+        let total = sentences.groups.count
         let started = Date()
-        for (group, members) in sentences.groups.enumerated() {
-            try Task.checkCancellation()
-            let text = sentences.text(of: group, in: cues)
-            var output = SubtitleCue(start: cues[members.first!].start, end: cues[members.last!].end, text: text)
-            if members.count == 1, text.isEmpty { output.text = cues[members[0]].text }
-            if !text.isEmpty {
-                if let cached = cache[text] {
-                    output.text = cached
-                } else {
-                    output.text = try await SubtitlePipeline.translate(text, from: source, to: target, context: [], with: translator)
-                    cache[text] = output.text
-                }
+        let remainingAtStart = total - existing.count
+        do {
+            let done = try await SentenceTranslation.run(
+                order: Array(sentences.groups.indices), cues: cues, sentences: sentences,
+                from: source, to: target, with: translator, done: existing
+            ) { step in
+                let newlyDone = step.done.count - existing.count
+                let elapsed = Date().timeIntervalSince(started)
+                let secondsLeft = newlyDone >= 5 && step.requestsDone >= 2
+                    ? elapsed / Double(newlyDone) * Double(remainingAtStart - newlyDone) : nil
+                progress(Progress(done: step.done.count, total: total, requests: step.requestsDone, secondsLeft: secondsLeft))
             }
-            translated.append(output)
-            let done = group + 1
-            let total = sentences.groups.count
-            let elapsed = Date().timeIntervalSince(started)
-            progress(Progress(done: done, total: total,
-                              secondsLeft: done >= 5 ? elapsed / Double(done) * Double(total - done) : nil))
+            return SentenceTranslation.cues(done, sentences: sentences, cues: cues)
+        } catch let partial as SentenceTranslation.Partial {
+            throw Stopped(cues: SentenceTranslation.cues(partial.done, sentences: sentences, cues: cues),
+                          translated: partial.done.count, total: total, underlying: partial.underlying)
         }
-        return translated
     }
 }
 
-/// UI state for the "Translate Subtitles" window.
+/// UI state for the "Save Translated Copy" window.
 @MainActor
 final class SubtitleJob: ObservableObject {
     enum Phase: Equatable {
         case idle
         case loaded(cues: Int, duration: TimeInterval)
         case preparing
-        case translating(done: Int, total: Int, secondsLeft: TimeInterval?)
+        case translating(done: Int, total: Int, requests: Int, secondsLeft: TimeInterval?)
         case finished(URL)
+        /// Stopped early with part of the file saved; the next run continues from there.
+        case partial(URL, message: String)
         case failed(String)
     }
 
@@ -61,7 +70,7 @@ final class SubtitleJob: ObservableObject {
     /// Highlights the drop zone while a file is dragged over it.
     @Published var isDropTargeted = false
 
-    private var cues: [SubtitleCue] = []
+    private(set) var cues: [SubtitleCue] = []
     private var task: Task<Void, Never>?
 
     var isWorking: Bool {
@@ -83,10 +92,28 @@ final class SubtitleJob: ObservableObject {
         }
     }
 
+    /// Sentences already translated into `target` next to the file, from an earlier run.
+    func cached(target: String) -> [Int: String] {
+        guard let input else { return [:] }
+        return SyncTranslations.existingTranslations(for: input, cues: cues, sentences: SubtitleSentences(cues: cues),
+                                                     target: target)
+    }
+
+    /// What a run would send, for the estimate shown before starting.
+    func estimate(target: String, batchSize: Int, limits: RateLimits?) -> CloudEstimate {
+        let groups = SubtitleSentences(cues: cues).groups.count
+        return CloudEstimate(cues: cues.count, groups: groups, remaining: groups - cached(target: target).count,
+                             batchSize: batchSize, limits: limits)
+    }
+
     /// - Parameter source: the subtitles' language, or `auto` (MADLAD detects it itself).
     func start(source: String, target: String, translatorSelection: String) {
         guard let input, !cues.isEmpty, !isWorking else { return }
         let cues = cues
+        let existing = cached(target: target)
+        // Continue into our own earlier (partial) copy; never overwrite someone else's file.
+        let output = existing.isEmpty ? SubtitleFile.outputURL(for: input, target: target)
+                                      : SubtitleFile.translationURL(for: input, target: target)
         phase = .preparing
         task = Task { [weak self] in
             do {
@@ -94,21 +121,38 @@ final class SubtitleJob: ObservableObject {
                 try await translator.start()
                 defer { Task { await translator.stop() } }
                 let result = try await SubtitleTranslator.translate(
-                    cues, from: source == Languages.auto ? "en" : source, to: target, with: translator
+                    cues, from: source == Languages.auto ? "en" : source, to: target, with: translator, existing: existing
                 ) { progress in
                     Task { @MainActor in
                         guard let self, self.isWorking else { return }
-                        self.phase = .translating(done: progress.done, total: progress.total, secondsLeft: progress.secondsLeft)
+                        self.phase = .translating(done: progress.done, total: progress.total,
+                                                  requests: progress.requests, secondsLeft: progress.secondsLeft)
                     }
                 }
-                let output = SubtitleFile.outputURL(for: input, target: target)
                 try SubtitleFile.srt(result).write(to: output, atomically: true, encoding: .utf8)
                 self?.phase = .finished(output)
-            } catch is CancellationError {
-                self?.phase = .loaded(cues: cues.count, duration: cues.last?.end ?? 0)
+            } catch let stopped as SubtitleTranslator.Stopped {
+                self?.saveStopped(stopped, to: output)
             } catch {
                 self?.phase = .failed(error.localizedDescription)
             }
+        }
+    }
+
+    private func saveStopped(_ stopped: SubtitleTranslator.Stopped, to output: URL) {
+        let cancelled = stopped.underlying is CancellationError
+        guard stopped.translated > 0, (try? SubtitleFile.srt(stopped.cues).write(to: output, atomically: true, encoding: .utf8)) != nil
+        else {
+            phase = cancelled ? .loaded(cues: cues.count, duration: cues.last?.end ?? 0) : .failed(stopped.underlying.localizedDescription)
+            return
+        }
+        let progress = "Translated \(stopped.translated) of \(stopped.total) lines; the rest will continue next time"
+        if case CloudError.quotaExhausted = stopped.underlying {
+            phase = .partial(output, message: "Daily limit reached. \(progress) (or switch to offline MADLAD).")
+        } else if cancelled {
+            phase = .partial(output, message: "Stopped. \(progress).")
+        } else {
+            phase = .partial(output, message: "\(stopped.underlying.localizedDescription) \(progress).")
         }
     }
 
@@ -143,7 +187,7 @@ enum SubtitleRunner {
             let started = Date()
             let result = try await SubtitleTranslator.translate(cues, from: source, to: target, with: translator) { progress in
                 if progress.done % 10 == 0 || progress.done == progress.total {
-                    print("[subtitles] \(progress.done)/\(progress.total)")
+                    print("[subtitles] \(progress.done)/\(progress.total) (\(progress.requests) requests)")
                 }
             }
             await translator.stop()
