@@ -144,8 +144,9 @@ import Testing
         #expect(updates.values.contains(.draft(DraftCaption(text: "[my] Where have you been?", isTranslation: true))))
     }
 
-    /// Word order differs between languages, so half a sentence is never translated.
-    @Test func unfinishedWordsStayInTheOriginalLanguage() async {
+    /// Word order differs between languages, so half a sentence is never translated, and
+    /// the live line doesn't flash words in the original language meanwhile.
+    @Test func unfinishedWordsAreNeitherTranslatedNorShown() async {
         let translator = FakeTranslator()
         let (pipeline, updates) = pipeline(transcriber: FakeTranscriber(script: [:]), translator: translator)
 
@@ -153,10 +154,19 @@ import Testing
         await pipeline.flush()
 
         #expect(await translator.calls.isEmpty)
-        #expect(updates.values.last == .draft(DraftCaption(text: "Where have you", isTranslation: false)))
+        #expect(updates.values.isEmpty)
     }
 
-    @Test func liveLineShowsTranslatedPartThenTheRest() async {
+    @Test func withoutLiveTranslationTheOriginalWordsShow() async {
+        let (pipeline, updates) = pipeline(transcriber: FakeTranscriber(script: [:]), translateDrafts: false)
+
+        await pipeline.submitVolatile("Where have you")
+        await pipeline.flush()
+
+        #expect(updates.values == [.draft(DraftCaption(text: "Where have you", isTranslation: false))])
+    }
+
+    @Test func liveLineShowsOnlyTheTranslatedPart() async {
         let (pipeline, updates) = pipeline(transcriber: FakeTranscriber(script: [:]))
 
         await pipeline.submitVolatile("When we got home, nobody")
@@ -164,7 +174,8 @@ import Testing
         await pipeline.submitVolatile("When we got home, nobody answered")
         await pipeline.flush()
 
-        #expect(updates.values.last == .draft(DraftCaption(text: "[my] When we got home, nobody answered", isTranslation: true)))
+        #expect(updates.values.last == .draft(DraftCaption(text: "[my] When we got home,", isTranslation: true)))
+        #expect(!updates.values.contains { if case .draft(let d?) = $0 { !d.isTranslation } else { false } })
     }
 
     @Test func finalTranslationStreamsIntoTheLiveLine() async {

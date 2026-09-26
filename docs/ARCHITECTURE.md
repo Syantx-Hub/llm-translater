@@ -409,9 +409,10 @@ keep changing. The live line therefore translates only what is finished:
 - `stableSplit` cuts the words heard so far into a *complete* part (sentences, and clauses
   ending in a comma or semicolon once they have three or more words) and the unfinished
   *tail*.
-- Only the complete part is translated. The live line shows its translation followed by
-  the tail in the original language. Until a sentence or clause is complete, the live
-  line shows the original words.
+- Only the complete part is translated, and in translate mode the live line shows
+  translations only. Until the first clause is done, the previous line stays up rather
+  than flashing words in the original language. (With "Translate while speaking" off,
+  the live line shows the original words instead.)
 - Translations stream in: `Translator.translate(..., partial:)` reports text every four
   tokens, so the first translated words appear about 0.2 s after a sentence completes
   instead of after the whole sentence (~1 s for Burmese on an M2).

@@ -187,8 +187,9 @@ actor SubtitlePipeline {
 
     /// Shows the words being spoken. Only finished sentences and clauses are translated:
     /// word order differs between languages (Burmese puts the verb last), so translating
-    /// half a sentence gives words that change or are simply wrong. The unfinished rest
-    /// shows in the original language until it is complete.
+    /// half a sentence gives words that change or are simply wrong. When translating, the
+    /// live line shows translations only; until the first clause is done, the previous
+    /// line stays up rather than flashing words in the original language.
     private func showDraft(_ text: String) {
         liveSource = text
         liveShowsNextLine = true
@@ -201,17 +202,14 @@ actor SubtitlePipeline {
             pendingDraftText = complete
             startDraftTranslation()
         }
-        emit(.draft(composeDraft(text)))
+        if let caption = composeDraft(text) { emit(.draft(caption)) }
     }
 
-    /// The translation of the finished part (when known) followed by the untranslated rest.
-    private func composeDraft(_ text: String) -> DraftCaption {
-        let (complete, tail) = Self.stableSplit(text)
-        guard let done = translatedDraft, complete.hasPrefix(done.text) else {
-            return DraftCaption(text: text, isTranslation: false)
-        }
-        let untranslated = (String(complete.dropFirst(done.text.count)) + " " + tail).trimmingCharacters(in: .whitespaces)
-        return DraftCaption(text: [done.translation, untranslated].filter { !$0.isEmpty }.joined(separator: " "), isTranslation: true)
+    /// The translation of the finished part of `text`, if one is ready.
+    private func composeDraft(_ text: String) -> DraftCaption? {
+        let (complete, _) = Self.stableSplit(text)
+        guard let done = translatedDraft, complete.hasPrefix(done.text) else { return nil }
+        return DraftCaption(text: done.translation, isTranslation: true)
     }
 
     /// At most one draft translation runs; a newer draft replaces the queued one.
@@ -239,8 +237,8 @@ actor SubtitlePipeline {
         let text = draftTranslation?.text
         draftTranslation = nil
         if let translation, let text { translatedDraft = (text, translation) }
-        if translation != nil, finals.isEmpty, let liveSource {
-            emit(.draft(composeDraft(liveSource)))
+        if translation != nil, finals.isEmpty, let liveSource, let caption = composeDraft(liveSource) {
+            emit(.draft(caption))
         }
         startDraftTranslation()
     }
@@ -396,16 +394,13 @@ actor SubtitlePipeline {
 
     // MARK: Translation
 
-    /// A draft translation as it is generated. While the line is still being spoken it is
-    /// followed by the untranslated rest; once the line's final is waiting on this very
-    /// translation, it shows on its own.
+    /// A draft translation as it is generated, shown while its line is still being spoken
+    /// or while the finished line waits for it.
     private func showDraftPartial(_ partial: String, of source: String, generation: Int) {
         guard !partial.isEmpty else { return }
         if generation == utterance, let liveSource {
-            let (complete, tail) = Self.stableSplit(liveSource)
-            guard complete.hasPrefix(source) else { return }
-            let rest = (String(complete.dropFirst(source.count)) + " " + tail).trimmingCharacters(in: .whitespaces)
-            emit(.draft(DraftCaption(text: [partial, rest].filter { !$0.isEmpty }.joined(separator: " "), isTranslation: true)))
+            guard Self.stableSplit(liveSource).complete.hasPrefix(source) else { return }
+            emit(.draft(DraftCaption(text: partial, isTranslation: true)))
         } else if awaitedDraft == source, !liveShowsNextLine {
             emit(.draft(DraftCaption(text: partial, isTranslation: true)))
         }
