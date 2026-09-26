@@ -10,6 +10,8 @@ struct Transcript: Equatable, Sendable {
 protocol SpeechTranscribing: Sendable {
     /// - Parameter language: Whisper code, or nil to auto-detect. Returns nil for no speech.
     func transcribe(_ samples: [Float], language: String?) async throws -> Transcript?
+    /// The spoken language of `samples` (Whisper code), without transcribing them.
+    func detectLanguage(_ samples: [Float]) async throws -> String?
 }
 
 /// On-device speech recognition with WhisperKit (CoreML on the Neural Engine / GPU).
@@ -59,6 +61,21 @@ actor Transcriber: SpeechTranscribing {
             await previous?.value
             try Task.checkCancellation()
             return try await self.decode(samples, language: language)
+        }
+        tail = Task { _ = try? await work.value }
+        return try await withTaskCancellationHandler {
+            try await work.value
+        } onCancel: {
+            work.cancel()
+        }
+    }
+
+    func detectLanguage(_ samples: [Float]) async throws -> String? {
+        let previous = tail
+        let work = Task { () async throws -> String? in
+            await previous?.value
+            try Task.checkCancellation()
+            return try await self.whisper?.detectLangauge(audioArray: samples).language
         }
         tail = Task { _ = try? await work.value }
         return try await withTaskCancellationHandler {

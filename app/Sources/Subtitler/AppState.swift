@@ -24,19 +24,21 @@ private enum SpeechEngine {
 /// session can switch recognizers on the main thread, so it is guarded by a lock.
 final class SampleRouter: @unchecked Sendable {
     private let lock = NSLock()
-    private var sink: (([Float]) -> Void)?
+    private var sinks: [([Float]) -> Void] = []
 
-    func route(to sink: @escaping ([Float]) -> Void) {
+    /// Every sink gets every sample (e.g. Apple Speech transcribing while Whisper watches
+    /// for a change of language).
+    func route(to sinks: [([Float]) -> Void]) {
         lock.lock()
-        self.sink = sink
+        self.sinks = sinks
         lock.unlock()
     }
 
     func send(_ samples: [Float]) {
         lock.lock()
-        let sink = self.sink
+        let sinks = self.sinks
         lock.unlock()
-        sink?(samples)
+        for sink in sinks { sink(samples) }
     }
 }
 
@@ -177,8 +179,13 @@ final class AppState: ObservableObject {
         var stopRecognizer: (@Sendable () async -> Void)?
         var recognizerPump: Task<Void, Never>?
         var router = SampleRouter()
-        /// Set while a Whisper session waits to hand over to Apple Speech.
-        var handOverPending = false
+        /// Whisper's segmenter input, kept in auto-detect sessions to notice language changes.
+        var segmenterSink: (([Float]) -> Void)?
+        /// Auto-detect with Apple Speech selected: follow the language with Apple Speech
+        /// where it can hear it, and Whisper where it can't.
+        var followsLanguage = false
+        /// The language Apple Speech is transcribing, when it is.
+        var appleLanguage: String?
     }
 
     private func run(_ id: Int) async {
@@ -230,7 +237,7 @@ final class AppState: ObservableObject {
             capture.onSamples = { router.send($0) }
             switch engine {
             case .whisper(_, let handOver):
-                owned.handOverPending = handOver
+                owned.followsLanguage = handOver
                 // One ordered stream from the capture queue to the pipeline actor.
                 let (events, sink) = AsyncStream<SpeechSegmenter.Event>.makeStream()
                 let segmenter = SpeechSegmenter(tuning: responsiveness.tuning)
@@ -238,10 +245,13 @@ final class AppState: ObservableObject {
                 owned.eventPump = Task {
                     for await event in events { await pipeline.submit(event) }
                 }
-                router.route { segmenter.append($0) }
+                let segmenterSink: ([Float]) -> Void = { segmenter.append($0) }
+                owned.segmenterSink = segmenterSink
+                router.route(to: [segmenterSink])
             case .apple(let locale):
                 phase = .loading("Preparing Apple Speech for \(Self.name(of: locale))…")
-                try await startAppleSpeech(locale, pipeline: pipeline, session: id, into: &owned, showProgress: true)
+                let sink = try await startAppleSpeech(locale, pipeline: pipeline, session: id, into: &owned, showProgress: true)
+                router.route(to: [sink])
                 try checkSession(id)
             }
             capture.onStop = { [weak self] error in
@@ -274,10 +284,10 @@ final class AppState: ObservableObject {
         Locale.current.localizedString(forLanguageCode: locale.language.languageCode?.identifier ?? "") ?? "the language"
     }
 
-    /// Starts Apple Speech and routes captured audio to it. Used at session start and when
-    /// a Whisper session hands over after detecting the language.
+    /// Starts Apple Speech and returns where to send audio. Used at session start and when
+    /// the session follows a change of language.
     private func startAppleSpeech(_ locale: Locale, pipeline: SubtitlePipeline, session id: Int,
-                                  into owned: inout Resources, showProgress: Bool) async throws {
+                                  into owned: inout Resources, showProgress: Bool) async throws -> ([Float]) -> Void {
         guard #available(macOS 26.0, *) else { throw SetupError.noSpeechModel }
         let language = Self.name(of: locale)
         let recognizer = AppleSpeechRecognizer(locale: locale)
@@ -299,35 +309,66 @@ final class AppState: ObservableObject {
                 }
             }
         }
-        owned.router.route { recognizer.append($0) }
+        return { recognizer.append($0) }
     }
 
-    /// The first final line revealed the language: switch to Apple Speech if it can hear it.
-    private func handOverToAppleSpeech(_ code: String, session id: Int) async {
-        guard resources.handOverPending, let pipeline = resources.pipeline else { return }
-        resources.handOverPending = false
+    /// Language switches run one at a time, in order.
+    private var languageSwitch: Task<Void, Never>?
+
+    /// Auto-detect found a (new) language: transcribe it with Apple Speech if it can hear
+    /// it, otherwise with Whisper, without stopping the session.
+    private func followLanguage(_ code: String, session id: Int) {
+        guard resources.followsLanguage else { return }
+        let previous = languageSwitch
+        languageSwitch = Task {
+            await previous?.value
+            await switchRecognizer(to: code, session: id)
+        }
+    }
+
+    private func switchRecognizer(to code: String, session id: Int) async {
+        guard session == id, let pipeline = resources.pipeline, let segmenterSink = resources.segmenterSink,
+              resources.appleLanguage != code else { return }
         let name = Languages.all.first { $0.code == code }?.name ?? code
-        guard let locale = await AppleSpeech.locale(for: code) else {
-            notice = "Detected \(name), which Apple Speech can't recognise — staying on Whisper."
-            return
+        let oldStop = resources.stopRecognizer
+        let oldPump = resources.recognizerPump
+
+        if let locale = await AppleSpeech.locale(for: code) {
+            notice = "Detected \(name) — switching to Apple Speech…"
+            var updated = Resources()
+            do {
+                let appleSink = try await startAppleSpeech(locale, pipeline: pipeline, session: id, into: &updated, showProgress: false)
+                guard session == id else {
+                    await updated.stopRecognizer?()
+                    return
+                }
+                await pipeline.setWhisperTranscribes(false)
+                // Whisper keeps listening, but only to notice the next change of language.
+                resources.router.route(to: [segmenterSink, appleSink])
+                resources.stopRecognizer = updated.stopRecognizer
+                resources.recognizerPump = updated.recognizerPump
+                resources.appleLanguage = code
+                notice = "Detected \(name) — using Apple Speech."
+            } catch {
+                await updated.stopRecognizer?()
+                await useWhisper(pipeline, segmenterSink)
+                notice = "Detected \(name); Apple Speech couldn't start (\(error.localizedDescription)) — using Whisper."
+            }
+        } else {
+            await useWhisper(pipeline, segmenterSink)
+            notice = "Detected \(name) — using Whisper (Apple Speech can't recognise \(name))."
         }
-        notice = "Detected \(name) — switching to Apple Speech…"
-        var updated = resources
-        do {
-            try await startAppleSpeech(locale, pipeline: pipeline, session: id, into: &updated, showProgress: false)
-        } catch {
-            await updated.stopRecognizer?()
-            notice = "Couldn't start Apple Speech (\(error.localizedDescription)) — staying on Whisper."
-            return
-        }
-        guard session == id else {
-            await release(updated)
-            return
-        }
-        // Whisper's segmenter no longer gets audio; its queued work still finishes.
-        resources.stopRecognizer = updated.stopRecognizer
-        resources.recognizerPump = updated.recognizerPump
-        notice = "Detected \(name) — using Apple Speech."
+        // Stop feeding the old recognizer's last words (the wrong language) into the pipeline.
+        oldPump?.cancel()
+        await oldStop?()
+    }
+
+    private func useWhisper(_ pipeline: SubtitlePipeline, _ segmenterSink: @escaping ([Float]) -> Void) async {
+        resources.router.route(to: [segmenterSink])
+        await pipeline.setWhisperTranscribes(true)
+        resources.stopRecognizer = nil
+        resources.recognizerPump = nil
+        resources.appleLanguage = nil
     }
 
     /// Apple Speech when it's selected and can hear the spoken language; otherwise Whisper.
@@ -424,7 +465,7 @@ final class AppState: ObservableObject {
             scheduleHide()
         case .detectedLanguage(let code):
             detectedLanguage = code
-            if resources.handOverPending { Task { await handOverToAppleSpeech(code, session: id) } }
+            followLanguage(code, session: id)
         case .error(let message):
             lastError = message
         }

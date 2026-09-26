@@ -44,11 +44,23 @@ actor FakeTranscriber: SpeechTranscribing {
         self.delay = delay
     }
 
+    /// Per sample count: the language actually spoken, when it isn't the default.
+    var spoken: [Int: String] = [:]
+    private(set) var detections: [Int] = []
+
+    func setSpoken(_ languages: [Int: String]) { spoken = languages }
+
     func transcribe(_ samples: [Float], language requested: String?) async throws -> Transcript? {
         calls.append(samples.count)
         if let delay { try await Task.sleep(for: delay) }
         guard let text = script[samples.count] else { return nil }
-        return Transcript(text: text, language: requested ?? language)
+        // Like Whisper: a forced language is used as is; otherwise the spoken one is detected.
+        return Transcript(text: text, language: requested ?? spoken[samples.count] ?? language)
+    }
+
+    func detectLanguage(_ samples: [Float]) async throws -> String? {
+        detections.append(samples.count)
+        return spoken[samples.count] ?? language
     }
 }
 

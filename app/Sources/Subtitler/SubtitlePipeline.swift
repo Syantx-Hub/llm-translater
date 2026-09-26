@@ -48,6 +48,17 @@ actor SubtitlePipeline {
 
     /// nil until auto-detection settles on the language of the first line.
     private var source: String?
+    /// Auto-detect keeps listening for a change of language (a new video), not just the first.
+    private let autoDetect: Bool
+    /// A different language heard in a row; two agreeing results switch to it.
+    private var languageCandidate: (code: String, count: Int)?
+    /// False while a streaming recognizer (Apple Speech) transcribes: Whisper then only
+    /// checks which language is spoken.
+    private var whisperTranscribes = true
+    private var checkingLanguage = false
+    private var lastLanguageCheck = Date.distantPast
+    /// Shorter audio is too little to trust a language guess.
+    private let minSamplesForLanguage = 24_000
     private var finals: [Final] = []
     private var latestDraft: (samples: [Float], isPause: Bool)?
     /// The draft being decoded. A regular draft is cancelled when the speaker pauses or the
@@ -80,6 +91,7 @@ actor SubtitlePipeline {
         self.transcriber = transcriber
         self.translator = translator
         self.source = source
+        self.autoDetect = source == nil
         self.target = target
         self.translateDrafts = translateDrafts
         self.emitUpdate = emit
@@ -106,8 +118,22 @@ actor SubtitlePipeline {
         emitUpdate(update)
     }
 
+    /// Hands transcription to a streaming recognizer (or back). Whisper then only watches
+    /// for a change of language.
+    func setWhisperTranscribes(_ on: Bool) {
+        whisperTranscribes = on
+        if !on {
+            finals.removeAll()
+            latestDraft = nil
+        }
+    }
+
     func submit(_ event: SpeechSegmenter.Event) {
         guard !cancelled else { return }
+        guard whisperTranscribes else {
+            checkLanguage(of: event)
+            return
+        }
         switch event {
         case .final(let samples, let trailingSilence):
             finals.append(Final(samples: samples, trailingSilence: trailingSilence, endedAt: Date()))
@@ -158,6 +184,48 @@ actor SubtitlePipeline {
         emit(.detectedLanguage(language))
     }
 
+    /// Auto-detect: switch language when two results in a row agree on a new one, so one
+    /// misheard line (a foreign word, a song) doesn't flip it.
+    private func observeLanguage(_ language: String, samples: Int) {
+        guard autoDetect, let current = source, samples >= minSamplesForLanguage, Languages.isSupported(language) else { return }
+        guard language != current else {
+            languageCandidate = nil
+            return
+        }
+        let count = languageCandidate?.code == language ? languageCandidate!.count + 1 : 1
+        languageCandidate = (language, count)
+        guard count >= 2 else { return }
+        Trace.log("language changed \(current) -> \(language)")
+        languageCandidate = nil
+        source = language
+        context.removeAll()
+        pendingDraftText = nil
+        translatedDraft = nil
+        emit(.detectedLanguage(language))
+    }
+
+    /// While Apple Speech transcribes, Whisper samples the language every few seconds.
+    private func checkLanguage(of event: SpeechSegmenter.Event) {
+        let samples: [Float]
+        switch event {
+        case .final(let audio, _): samples = audio
+        case .partial(let audio, true): samples = audio
+        case .partial: return
+        }
+        guard autoDetect, !checkingLanguage, samples.count >= minSamplesForLanguage,
+              Date().timeIntervalSince(lastLanguageCheck) >= 3 else { return }
+        checkingLanguage = true
+        lastLanguageCheck = Date()
+        Task {
+            let language = try? await transcriber.detectLanguage(samples)
+            checkingLanguage = false
+            if let language, !cancelled { observeLanguage(language, samples: samples.count) }
+        }
+    }
+
+    /// Auto-detect decodes without a language hint so a change of language is noticed.
+    private var decodeLanguage: String? { autoDetect ? nil : source }
+
     // MARK: Drafts
 
     private func cancelRegularDraft() {
@@ -167,12 +235,13 @@ actor SubtitlePipeline {
     private func draft(_ samples: [Float], isPause: Bool) async {
         let generation = utterance
         let t0 = Date()
-        let task = Task { [transcriber, source] in try? await transcriber.transcribe(samples, language: source) }
+        let task = Task { [transcriber, decodeLanguage] in try? await transcriber.transcribe(samples, language: decodeLanguage) }
         decodingDraft = (isPause, task)
         let result = await task.value
         decodingDraft = nil
         Trace.log("\(isPause ? "pause" : "draft") asr \(Trace.seconds(samples.count)) audio in \(String(format: "%.2f", Date().timeIntervalSince(t0)))s\(task.isCancelled ? " (cancelled)" : "")")
         guard let result, !task.isCancelled, generation == utterance, !cancelled else { return }
+        observeLanguage(result.language, samples: samples.count)
         // Remember it even if the final already arrived: when the final adds nothing but
         // silence, it reuses this text instead of decoding again.
         lastDraft = (samples.count, result.text)
@@ -301,11 +370,12 @@ actor SubtitlePipeline {
             text = reusableText
         } else {
             do {
-                guard let result = try await transcriber.transcribe(final.samples, language: source) else {
+                guard let result = try await transcriber.transcribe(final.samples, language: decodeLanguage) else {
                     emit(.draft(nil))
                     return
                 }
                 detect(result.language)
+                observeLanguage(result.language, samples: final.samples.count)
                 text = result.text
             } catch {
                 emit(.error(error.localizedDescription))

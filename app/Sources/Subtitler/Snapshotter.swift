@@ -19,6 +19,7 @@ enum Snapshotter {
             ("models", AnyView(ModelsView(store: models)), NSSize(width: 700, height: 1180)),
             ("panel", AnyView(ControlPanel(state: state, models: models)), NSSize(width: 360, height: 520)),
             ("captions", AnyView(CaptionsView(state: state, style: style)), NSSize(width: 900, height: 700)),
+            ("subtitles", AnyView(SubtitleFileView(job: SubtitleJob(), state: state, models: models)), NSSize(width: 520, height: 560)),
             ("overlay", AnyView(SubtitleOverlayView(state: state, style: style).background(Color.gray)), NSSize(width: 1000, height: 320)),
         ]
         for step in WelcomeView.Step.allCases {

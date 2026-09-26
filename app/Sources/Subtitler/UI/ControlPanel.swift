@@ -22,6 +22,12 @@ struct ControlPanel: View {
                 Text(error).font(.caption).foregroundStyle(.orange).lineLimit(3)
             }
             Divider()
+            Button {
+                show("subtitles")
+            } label: {
+                Label("Translate a subtitle file…", systemImage: "doc.text")
+            }
+            .buttonStyle(.link)
             HStack {
                 Button("Captions…") { show("captions") }
                 Button("Models…") { show("models") }

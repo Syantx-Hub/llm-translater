@@ -124,6 +124,72 @@ import Testing
         #expect(lines(updates).count == 2)
     }
 
+    // MARK: Changing language mid-session (auto-detect)
+
+    @Test func autoDetectSwitchesWhenTheLanguageChanges() async {
+        let long = 30_000 // enough audio to trust a language guess
+        let transcriber = FakeTranscriber(script: [long: "Hello.", long + 1: "Hi.", long + 2: "Hallo.", long + 3: "Guten Tag."])
+        await transcriber.setSpoken([long + 2: "de", long + 3: "de"])
+        let (pipeline, updates) = pipeline(transcriber: transcriber, source: nil, translateDrafts: false)
+
+        for count in long...(long + 3) {
+            await pipeline.submit(.final(samples(count), trailingSilence: 0))
+        }
+        await pipeline.flush()
+
+        let detected = updates.values.compactMap { if case .detectedLanguage(let code) = $0 { code } else { nil } }
+        #expect(detected == ["en", "de"])
+    }
+
+    @Test func oneLineInAnotherLanguageDoesNotSwitch() async {
+        let long = 30_000
+        let transcriber = FakeTranscriber(script: [long: "Hello.", long + 1: "Merci.", long + 2: "Thanks."])
+        await transcriber.setSpoken([long + 1: "fr"])
+        let (pipeline, updates) = pipeline(transcriber: transcriber, source: nil, translateDrafts: false)
+
+        for count in long...(long + 2) {
+            await pipeline.submit(.final(samples(count), trailingSilence: 0))
+        }
+        await pipeline.flush()
+
+        let detected = updates.values.compactMap { if case .detectedLanguage(let code) = $0 { code } else { nil } }
+        #expect(detected == ["en"])
+    }
+
+    @Test func aChosenLanguageNeverSwitches() async {
+        let long = 30_000
+        let transcriber = FakeTranscriber(script: [long: "Hallo.", long + 1: "Guten Tag."])
+        await transcriber.setSpoken([long: "de", long + 1: "de"])
+        let (pipeline, updates) = pipeline(transcriber: transcriber, source: "en", translateDrafts: false)
+
+        await pipeline.submit(.final(samples(long), trailingSilence: 0))
+        await pipeline.submit(.final(samples(long + 1), trailingSilence: 0))
+        await pipeline.flush()
+
+        #expect(!updates.values.contains { if case .detectedLanguage = $0 { true } else { false } })
+    }
+
+    /// While Apple Speech transcribes, Whisper only samples the language.
+    @Test func languageWatchOnlyDetectsWhileAnotherRecognizerTranscribes() async {
+        let long = 30_000
+        let transcriber = FakeTranscriber(script: [long: "Hello."])
+        let (pipeline, updates) = pipeline(transcriber: transcriber, source: nil, translateDrafts: false)
+        await pipeline.submit(.final(samples(long), trailingSilence: 0)) // locks English
+        await pipeline.flush()
+
+        await transcriber.setSpoken([long + 1: "de", long + 2: "de"])
+        await pipeline.setWhisperTranscribes(false)
+        await pipeline.submit(.final(samples(long + 1), trailingSilence: 0))
+        try? await Task.sleep(for: .milliseconds(50))
+        await pipeline.flush()
+
+        #expect(await transcriber.calls == [long]) // nothing transcribed after the hand-off
+        #expect(await transcriber.detections == [long + 1])
+        // One check isn't enough to switch; checks are also spaced out, so no switch yet.
+        let detected = updates.values.compactMap { if case .detectedLanguage(let code) = $0 { code } else { nil } }
+        #expect(detected == ["en"])
+    }
+
     @Test func silentFinalClearsTheDraftAndAddsNoLine() async {
         let (pipeline, updates) = pipeline(transcriber: FakeTranscriber(script: [:]))
 

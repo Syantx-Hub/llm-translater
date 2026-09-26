@@ -30,6 +30,7 @@ struct SubtitlerApp: App {
     @StateObject private var models: ModelStore
     @StateObject private var state: AppState
     @StateObject private var style: CaptionStyle
+    @StateObject private var subtitleJob = SubtitleJob()
 
     init() {
         let models = ModelStore()
@@ -60,6 +61,11 @@ struct SubtitlerApp: App {
 
         Window("Captions", id: "captions") {
             CaptionsView(state: state, style: style)
+        }
+        .windowResizability(.contentSize)
+
+        Window("Translate Subtitles", id: "subtitles") {
+            SubtitleFileView(job: subtitleJob, state: state, models: models)
         }
         .windowResizability(.contentSize)
 

@@ -397,8 +397,20 @@ line is emitted. `AppState` smooths it and shows it in the status line.
 
 ### Language detection
 
-In auto mode, the language is locked from the **first final**, never from a draft: half a
-second of audio is too little to trust. Until then, drafts are shown untranslated.
+In auto mode, the first language comes from the **first final**, never from a draft: half
+a second of audio is too little to trust.
+
+Auto-detect keeps listening after that, so switching to a video in another language
+needs no restart:
+
+- Whisper decodes without a language hint, and every result with at least 1.5 s of audio
+  reports the language it heard. Two results in a row agreeing on a new language switch
+  the session to it (`observeLanguage`); a single foreign line or song doesn't.
+- While Apple Speech transcribes, Whisper's segmenter keeps running on the same audio (the
+  `SampleRouter` fans it out) and `detectLanguage` samples the language at most every
+  3 s, without transcribing.
+- On a change, `AppState.followLanguage` restarts Apple Speech in the new language if Apple
+  supports it, or hands transcription back to Whisper if not. The session keeps running.
 
 ### Translate mode shows finished lines only
 
