@@ -35,6 +35,7 @@ struct SubtitlerApp: App {
     @StateObject private var state: AppState
     @StateObject private var style: CaptionStyle
     @StateObject private var subtitleJob = SubtitleJob()
+    @StateObject private var subtitleSearch = SubtitleSearch()
 
     init() {
         let models = ModelStore()
@@ -65,6 +66,11 @@ struct SubtitlerApp: App {
 
         Window("Captions", id: "captions") {
             CaptionsView(state: state, style: style)
+        }
+        .windowResizability(.contentSize)
+
+        Window("Find Subtitles", id: "find-subtitles") {
+            SubtitleSearchView(search: subtitleSearch, state: state)
         }
         .windowResizability(.contentSize)
 

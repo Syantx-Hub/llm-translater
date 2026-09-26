@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ControlPanel: View {
     @ObservedObject var state: AppState
@@ -79,12 +80,16 @@ struct ControlPanel: View {
             .labelsHidden()
             .disabled(state.isRunning || state.isBusy)
 
+            if state.mode == .synced { syncSettings }
+
             Form {
-                Picker("Spoken language", selection: $state.sourceLanguage) {
-                    Text(autoLabel).tag(Languages.auto)
-                    ForEach(Languages.all) { Text($0.name).tag($0.code) }
+                if state.mode != .synced {
+                    Picker("Spoken language", selection: $state.sourceLanguage) {
+                        Text(autoLabel).tag(Languages.auto)
+                        ForEach(Languages.all) { Text($0.name).tag($0.code) }
+                    }
                 }
-                if state.mode == .translate {
+                if state.mode.translates {
                     Picker("Subtitles in", selection: $state.targetLanguage) {
                         ForEach(Languages.all) { Text($0.name).tag($0.code) }
                     }
@@ -97,7 +102,9 @@ struct ControlPanel: View {
             }
             .disabled(state.isRunning || state.isBusy)
 
-            if models.speechModel?.isBuiltIn == true {
+            if state.mode == .synced {
+                EmptyView()
+            } else if models.speechModel?.isBuiltIn == true {
                 if state.sourceLanguage == Languages.auto {
                     Toggle("Detect the language, then switch to Apple Speech", isOn: $state.appleAutoHandover)
                         .font(.caption)
@@ -117,7 +124,7 @@ struct ControlPanel: View {
 
             VStack(alignment: .leading, spacing: 3) {
                 modelRow("waveform", models.speechModel?.name ?? "No speech model")
-                if state.mode == .translate {
+                if state.mode.translates {
                     modelRow("character.bubble", translationName)
                 }
             }
@@ -129,6 +136,59 @@ struct ControlPanel: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
+    }
+
+    /// Subtitle-file mode: which file to follow, its language, and how the sync is going.
+    private var syncSettings: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label(state.syncFile?.lastPathComponent ?? "No subtitle file", systemImage: "doc.text")
+                    .lineLimit(1).truncationMode(.middle)
+                Spacer()
+                Button("Choose…") { chooseSyncFile() }
+                Button("Find Online…") { show("find-subtitles") }
+            }
+            .disabled(state.isRunning || state.isBusy)
+            if !state.syncCues.isEmpty {
+                Picker("File is in", selection: $state.syncLanguage) {
+                    ForEach(Languages.all) { Text($0.name).tag($0.code) }
+                }
+                .disabled(state.isRunning || state.isBusy)
+            }
+            Text(syncStatusText)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var syncStatusText: String {
+        switch state.syncStatus {
+        case .searching?:
+            "Listening for dialogue to find your place in the video…"
+        case .synced(let time)?:
+            "In sync at \(Self.clock(time)). Lines show on the file's own timing."
+        case .paused(let time)?:
+            "Paused at \(Self.clock(time))."
+        case nil:
+            state.syncCues.isEmpty
+                ? "Choose the subtitles for what you're watching, in the language being spoken. They'll show translated, on time."
+                : "\(state.syncCues.count) lines. Press Start while the video plays; the first clear line of dialogue syncs it."
+        }
+    }
+
+    private static func clock(_ seconds: TimeInterval) -> String {
+        let total = Int(max(seconds, 0))
+        return total >= 3600
+            ? String(format: "%d:%02d:%02d", total / 3600, total / 60 % 60, total % 60)
+            : String(format: "%d:%02d", total / 60, total % 60)
+    }
+
+    private func chooseSyncFile() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = SubtitleFile.readableExtensions.compactMap { UTType(filenameExtension: $0) }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        state.loadSyncFile(url)
     }
 
     private func modelRow(_ icon: String, _ text: String) -> some View {

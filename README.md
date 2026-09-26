@@ -21,6 +21,11 @@ For how it all works inside, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - **Translate subtitle files** — drop an `.srt`/`.vtt` in and get a translated file next to
   it (`Movie.en.srt` → `Movie.my.srt`) that players load automatically. Because it's done
   ahead of time, the subtitles appear exactly when the actors speak.
+- **Subtitle file mode (synced)** — pick the subtitles for what you're watching (a file,
+  or found on OpenSubtitles), press Start while the video plays, and Subtitler finds its
+  place by matching what it hears to the file's lines. Lines then show translated on the
+  file's own timing — with the actor, not after — including on streaming services.
+  Pausing and skipping are followed.
 - **Auto-detect follows the video** — switch to a video in another language and the
   session switches with it.
 - **Caption styling** (Captions window) — font, weight, size, line spacing, colours,
@@ -82,6 +87,23 @@ Models live in `~/Library/Application Support/Subtitler/Models`. Downloads go to
 staging folder and move into place only when complete; deleting a model removes its
 files and caches. CoreML also keeps a compiled-model cache in
 `~/Library/Caches/com.syantxhub.subtitler`, which macOS may clear at any time.
+
+## OpenSubtitles API key
+
+Searching OpenSubtitles needs a free API key from
+https://www.opensubtitles.com/en/consumers. Put it in a `.env` file (see `.env.example`):
+
+- `~/Library/Application Support/Subtitler/.env` — works for every build, or
+- `.env` in the repo root — read by `scripts/build-app.sh --dev` builds.
+
+```
+OPENSUBTITLES_API_KEY=your-key
+# optional, raises the daily download limit:
+OPENSUBTITLES_USERNAME=you
+OPENSUBTITLES_PASSWORD=secret
+```
+
+The key is only sent to api.opensubtitles.com and is never logged.
 
 ## Tests
 

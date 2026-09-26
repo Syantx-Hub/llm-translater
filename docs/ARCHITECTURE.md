@@ -637,6 +637,38 @@ exactly when the actor speaks.
 On an M2 with MADLAD Q4, a line takes about 0.5 s, so a 1,000-line film takes around
 8–10 minutes.
 
+## 10c. Subtitle-file mode (synced)
+
+Live captions are always a little late; a subtitle file isn't. In **Subtitle file** mode
+the session doesn't show what it hears. It uses it to find where the video is in a
+subtitle file, then shows the file's lines, translated, on the file's own timing.
+
+- **Finding the place** (`SubtitleSync`). Each finished line the recognizer hears (in the
+  file's language, detected with NaturalLanguage) is compared with runs of 1–4 cues using
+  character-bigram Dice similarity on lowercased letters and digits, which works with or
+  without spaces (Korean, Chinese). A strong match (score ≥ 0.8, ≥ 20 characters) syncs
+  at once; weaker ones (≥ 0.55) need a second, agreeing match. The clock is an *anchor*,
+  the wall-clock moment the video was at 0:00, set so the matched cue ends when the
+  speech ended.
+- **Staying in sync.** Later matches near the expected position nudge the anchor (drift).
+  A match elsewhere is a seek, ad break or next episode, and moves the anchor once a
+  second line agrees. Players output digital silence when paused, which
+  `PlaybackSilenceDetector` notices (0.6 s of exact silence); the clock freezes until
+  sound returns.
+- **Translating ahead** (`SyncTranslations`). The next 12 lines are translated in the
+  background as the clock moves; after a jump, the lines at the new position go first.
+  A translation made earlier with Translate Subtitles (`Movie.my.srt` next to
+  `Movie.en.srt`, same timings) is reused, so nothing is translated live. Lines whose
+  translation isn't ready yet aren't shown in the original language.
+- **Finding subtitles** (`OpenSubtitlesClient`). Search and download through the
+  OpenSubtitles REST API with the key from `.env` (`Secrets`); a free account login
+  raises the daily download limit. Downloads are saved under
+  `~/Library/Application Support/Subtitler/Subtitles`.
+
+The subtitles must be in the spoken language for text matching (e.g. Korean subtitles for
+a Korean drama). Aligning subtitles in another language would need timing-only alignment
+(speech activity against cue times), which isn't implemented.
+
 ## 11. Models: catalog, download, delete
 
 ### Catalog
@@ -800,7 +832,7 @@ Notes:
 ## 15. Tests
 
 ```sh
-cd app && swift test                              # 89 tests, ~1–2 s
+cd app && swift test                              # 103 tests, ~1–2 s
 SUBTITLER_E2E=1 swift test --filter endToEnd      # real models, slow
 python3 -m unittest discover -s python/tests      # sidecar protocol
 ```

@@ -4,11 +4,13 @@ import Foundation
 enum SetupError: LocalizedError {
     case noSpeechModel
     case appleSpeechNeedsWhisper(String)
+    case noSubtitleFile
 
     var errorDescription: String? {
         switch self {
         case .noSpeechModel: "Download a speech model in Models to start."
         case .appleSpeechNeedsWhisper(let reason): "\(reason) Download a Whisper model in Models for this."
+        case .noSubtitleFile: "Choose a subtitle file to follow."
         }
     }
 }
@@ -44,8 +46,20 @@ final class SampleRouter: @unchecked Sendable {
 
 enum CaptionMode: String, CaseIterable, Identifiable {
     case translate, transcribe
+    /// Show a subtitle file's lines, translated, in sync with what's playing.
+    case synced
     var id: String { rawValue }
-    var label: String { self == .translate ? "Translate" : "Transcribe only" }
+
+    var label: String {
+        switch self {
+        case .translate: "Translate"
+        case .transcribe: "Transcribe only"
+        case .synced: "Subtitle file"
+        }
+    }
+
+    /// Captions are in the subtitle language (translated) rather than the spoken one.
+    var translates: Bool { self != .transcribe }
 }
 
 enum Responsiveness: String, CaseIterable, Identifiable {
@@ -71,9 +85,19 @@ enum Responsiveness: String, CaseIterable, Identifiable {
 }
 
 struct SubtitleLine: Identifiable, Equatable {
-    let id = UUID()
+    var id = UUID()
     let original: String
     let translation: String
+}
+
+extension SubtitleLine {
+    /// A subtitle-file line keeps the same identity while it's on screen, so the overlay
+    /// doesn't redraw it every tick.
+    init(stableID index: Int, original: String, translation: String) {
+        self.init(id: UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                                  UInt8(index >> 24 & 0xFF), UInt8(index >> 16 & 0xFF), UInt8(index >> 8 & 0xFF), UInt8(index & 0xFF))),
+                  original: original, translation: translation)
+    }
 }
 
 /// Owns the live session (capture → segmenter → pipeline) and everything the UI shows.
@@ -106,16 +130,28 @@ final class AppState: ObservableObject {
     @Published var appleAutoHandover: Bool { didSet { save(appleAutoHandover, "appleAutoHandover") } }
     /// Informational status (e.g. which engine is in use), shown less loudly than errors.
     @Published private(set) var notice: String?
+    // Subtitle-file sync.
+    /// The subtitle file to follow in "Subtitle file" mode, and its lines.
+    @Published private(set) var syncFile: URL?
+    @Published private(set) var syncCues: [SubtitleCue] = []
+    /// The file's language (detected from its text; changeable).
+    @Published var syncLanguage: String = "en"
+    @Published private(set) var syncStatus: SubtitleSync.Status?
+    private var sync: SubtitleSync?
+    private var syncTranslations: SyncTranslations?
+    private var syncTimer: Task<Void, Never>?
+
     /// Hide lines the recognizer was unsure about rather than show misheard words.
     @Published var hidesUnclearLines: Bool { didSet { save(hidesUnclearLines, "hidesUnclearLines") } }
     private var unclearCount = 0
+    private var usesAppleSpeech = false
 
     /// The language captions are written in: the target, or the spoken language when only transcribing.
     var captionLanguage: String {
         if isRunning {
             return sessionCaptionLanguage ?? spokenLanguage
         }
-        return mode == .translate ? targetLanguage : spokenLanguage
+        return mode.translates ? targetLanguage : spokenLanguage
     }
 
     private var spokenLanguage: String {
@@ -204,7 +240,10 @@ final class AppState: ObservableObject {
         let sessionTarget = targetLanguage
         var owned = Resources()
         do {
-            let engine = try await chooseSpeechEngine()
+            if sessionMode == .synced, syncCues.isEmpty { throw SetupError.noSubtitleFile }
+            // Sync listens for the file's language; the other modes for the chosen one.
+            let spoken = sessionMode == .synced ? syncLanguage : sourceLanguage
+            let engine = try await chooseSpeechEngine(spoken: spoken)
             if case .whisper(let model, _) = engine { try await loadSpeechModel(model) }
             try checkSession(id)
             // The selected model, plus the Whisper fallback if Apple Speech handed over.
@@ -213,7 +252,7 @@ final class AppState: ObservableObject {
             models.inUse = loaded
 
             let translator: Translator
-            if sessionMode == .translate {
+            if sessionMode.translates, !(sessionMode == .synced && syncLanguage == sessionTarget) {
                 phase = .loading("Starting translator (loading the model can take a minute)…")
                 translator = await startTranslator()
                 if let selection = ModelCatalog.model(id: models.selectedTranslation), !(translator is PassthroughTranslator) {
@@ -228,11 +267,13 @@ final class AppState: ObservableObject {
             phase = .loading("Starting audio capture…")
             let pipeline = SubtitlePipeline(
                 transcriber: transcriber, translator: translator,
-                source: sourceLanguage == Languages.auto ? nil : sourceLanguage,
+                source: spoken == Languages.auto ? nil : spoken,
+                // Sync only needs what was said; the file's lines are translated separately.
                 target: sessionMode == .translate ? sessionTarget : nil,
                 // Finished sentences are translated in the background while someone speaks.
                 translateDrafts: sessionMode == .translate,
-                hidesUnclearLines: hidesUnclearLines,
+                // For syncing, even a shaky transcript can still match a line.
+                hidesUnclearLines: hidesUnclearLines && sessionMode != .synced,
                 emit: { [weak self] update in
                     DispatchQueue.main.async { self?.apply(update, session: id) }
                 })
@@ -240,7 +281,12 @@ final class AppState: ObservableObject {
 
             let capture = AudioCaptureFactory.make()
             let router = owned.router
-            capture.onSamples = { router.send($0) }
+            if sessionMode == .synced {
+                let silence = startSync(translator: translator, target: sessionTarget, session: id)
+                capture.onSamples = { router.send($0); silence.append($0) }
+            } else {
+                capture.onSamples = { router.send($0) }
+            }
             switch engine {
             case .whisper(_, let handOver):
                 owned.followsLanguage = handOver
@@ -271,7 +317,8 @@ final class AppState: ObservableObject {
             try checkSession(id)
 
             resources = owned
-            sessionCaptionLanguage = sessionMode == .translate ? sessionTarget : nil
+            sessionCaptionLanguage = sessionMode.translates ? sessionTarget : nil
+            usesAppleSpeech = { if case .apple = engine { true } else { false } }()
             phase = .running
             overlay.show()
         } catch {
@@ -379,11 +426,11 @@ final class AppState: ObservableObject {
 
     /// Apple Speech when it's selected and can hear the spoken language; otherwise Whisper.
     /// Apple Speech can't auto-detect the language, so auto-detect also uses Whisper.
-    private func chooseSpeechEngine() async throws -> SpeechEngine {
+    private func chooseSpeechEngine(spoken language: String) async throws -> SpeechEngine {
         guard let selected = models.speechModel else { throw SetupError.noSpeechModel }
         guard selected.isBuiltIn else { return .whisper(selected, handOver: false) }
-        let spoken = Languages.all.first { $0.code == sourceLanguage }?.name
-        if sourceLanguage != Languages.auto, let locale = await AppleSpeech.locale(for: sourceLanguage) {
+        let spoken = Languages.all.first { $0.code == language }?.name
+        if language != Languages.auto, let locale = await AppleSpeech.locale(for: language) {
             return .apple(locale)
         }
         let reason = spoken.map { "Apple Speech can't recognise \($0)." }
@@ -392,7 +439,7 @@ final class AppState: ObservableObject {
         guard let fallback = whisper.first(where: { $0.id == ModelCatalog.recommendedWhisper }) ?? whisper.first else {
             throw SetupError.appleSpeechNeedsWhisper(reason)
         }
-        if sourceLanguage == Languages.auto, appleAutoHandover {
+        if language == Languages.auto, appleAutoHandover {
             notice = "Detecting the language with \(fallback.name), then switching to Apple Speech."
             return .whisper(fallback, handOver: true)
         }
@@ -431,6 +478,11 @@ final class AppState: ObservableObject {
     private func endSession() {
         let owned = resources
         resources = Resources()
+        syncTimer?.cancel()
+        syncTimer = nil
+        sync = nil
+        syncTranslations = nil
+        syncStatus = nil
         sessionCaptionLanguage = nil
         models.inUse = []
         hideTask?.cancel()
@@ -461,8 +513,15 @@ final class AppState: ObservableObject {
     private func apply(_ update: SubtitlePipeline.Update, session id: Int) {
         guard isRunning, id == session else { return }
         switch update {
+        case .draft where sync != nil:
+            break // sync mode shows the file's lines, never live words
         case .draft(let caption):
             draft = caption
+        case .line(let original, _, let seconds) where sync != nil:
+            // Sync mode: what was heard only positions the file; its own lines are shown.
+            let speechEnded = Date().addingTimeInterval(-seconds - (usesAppleSpeech ? 0 : Double(responsiveness.tuning.endSilenceMS) / 1000))
+            sync?.observe(original, speechEndedAt: speechEnded)
+            updateSyncedCaptions()
         case .line(let original, let translation, let seconds):
             draft = nil
             lines.append(SubtitleLine(original: original, translation: translation))
@@ -495,11 +554,91 @@ final class AppState: ObservableObject {
     }
 }
 
+// MARK: - Subtitle-file sync
+
+extension AppState {
+    /// Loads a subtitle file to follow and detects its language.
+    func loadSyncFile(_ url: URL) {
+        do {
+            let cues = try SubtitleFile.read(url)
+            syncFile = url
+            syncCues = cues
+            syncLanguage = SubtitleLanguage.detect(cues) ?? syncLanguage
+            lastError = nil
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    /// Loads subtitle text downloaded from OpenSubtitles, saved under Application Support.
+    func loadDownloadedSubtitles(_ text: String, named name: String) throws -> URL {
+        let folder = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Subtitler/Subtitles", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let url = folder.appendingPathComponent(name.hasSuffix(".srt") || name.hasSuffix(".vtt") ? name : name + ".srt")
+        try text.write(to: url, atomically: true, encoding: .utf8)
+        loadSyncFile(url)
+        return url
+    }
+
+    /// Starts following the file: a clock driven by what's heard, lines translated just
+    /// ahead of it, and pause detection from digital silence.
+    fileprivate func startSync(translator: Translator, target: String, session id: Int) -> PlaybackSilenceDetector {
+        let sync = SubtitleSync(cues: syncCues)
+        self.sync = sync
+        let existing = syncFile.map { SyncTranslations.existingTranslations(for: $0, cues: syncCues, target: target) } ?? [:]
+        syncTranslations = syncLanguage == target
+            ? nil
+            : SyncTranslations(cues: syncCues, translator: translator, source: syncLanguage, target: target, existing: existing)
+        let silence = PlaybackSilenceDetector()
+        silence.onChange = { [weak self] silent, since in
+            DispatchQueue.main.async {
+                guard let self, self.session == id else { return }
+                if silent { self.sync?.pause(at: since) } else { self.sync?.resume(at: since) }
+                self.updateSyncedCaptions()
+            }
+        }
+        syncTimer = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(100))
+                await MainActor.run { self?.updateSyncedCaptions() }
+            }
+        }
+        return silence
+    }
+
+    /// Shows the file's current lines (translated when ready) and translates the next ones.
+    fileprivate func updateSyncedCaptions() {
+        guard let sync, isRunning else { return }
+        let now = Date()
+        syncStatus = sync.status(at: now)
+        let active = sync.activeCues(at: now)
+        Task { [syncTranslations, syncCues] in
+            await syncTranslations?.prefetch(sync.upcomingCues(at: now, count: 12))
+            var shown: [SubtitleLine] = []
+            for index in active {
+                let original = SubtitleFile.plainText(syncCues[index].text)
+                if let syncTranslations {
+                    // Not translated yet: show nothing rather than the other language.
+                    guard let translation = await syncTranslations.translation(of: index) else { continue }
+                    shown.append(SubtitleLine(stableID: index, original: original, translation: translation))
+                } else {
+                    shown.append(SubtitleLine(stableID: index, original: original, translation: original))
+                }
+            }
+            await MainActor.run { [weak self] in
+                guard let self, self.sync === sync, self.lines != shown else { return }
+                self.lines = shown
+            }
+        }
+    }
+}
+
 extension AppState {
     /// Sample captions in the caption language, for previews and `--snapshot`: three
     /// finished lines (so "Lines on screen" is visible) and a fourth as the draft.
     var sampleLines: [SubtitleLine] {
-        Array(SampleCaptions.lines(language: captionLanguage, translating: mode == .translate).dropLast())
+        Array(SampleCaptions.lines(language: captionLanguage, translating: mode.translates).dropLast())
     }
 
     /// Transcribe-only shows words as they're spoken; translating shows finished lines only.
