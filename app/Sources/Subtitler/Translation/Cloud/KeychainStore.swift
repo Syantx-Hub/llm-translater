@@ -3,16 +3,18 @@ import Security
 
 /// Where API keys live. The app only ever holds a key while it builds a request.
 protocol SecretStore: Sendable {
+    /// The secret itself: only when sending a request.
     func read(_ name: String) -> String?
+    /// Whether a secret is saved, without reading it (no Keychain prompt).
+    func contains(_ name: String) -> Bool
+    /// "••••1234": all the UI may ever show of a saved key, without reading the key.
+    func hint(_ name: String) -> String?
     func save(_ secret: String, for name: String) throws
     func delete(_ name: String) throws
 }
 
-extension SecretStore {
-    /// "••••1234": all the UI may ever show of a saved key.
-    func hint(_ name: String) -> String? {
-        read(name).map { "••••" + String($0.suffix(4)) }
-    }
+enum SecretHint {
+    static func of(_ secret: String) -> String { "••••" + String(secret.suffix(4)) }
 }
 
 enum SecretStoreError: LocalizedError {
@@ -48,13 +50,36 @@ struct KeychainStore: SecretStore {
         return nil
     }
 
+    func contains(_ name: String) -> Bool { attributes(name) != nil }
+
+    /// Stored beside the key as an attribute when it's saved, so showing it never reads the key.
+    func hint(_ name: String) -> String? {
+        guard let attributes = attributes(name) else { return nil }
+        return attributes[kSecAttrComment as String] as? String ?? "••••"
+    }
+
+    /// Reading an item's attributes (not its data) doesn't need the user's permission.
+    private func attributes(_ name: String) -> [String: Any]? {
+        for dataProtection in [true, false] {
+            var query = base(name, dataProtection: dataProtection)
+            query[kSecReturnAttributes as String] = true
+            query[kSecMatchLimit as String] = kSecMatchLimitOne
+            var result: AnyObject?
+            if SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess, let attributes = result as? [String: Any] {
+                return attributes
+            }
+        }
+        return nil
+    }
+
     func save(_ secret: String, for name: String) throws {
         try delete(name)
         let data = Data(secret.utf8)
-        var status = add(name, data, dataProtection: true)
+        let hint = SecretHint.of(secret)
+        var status = add(name, data, hint: hint, dataProtection: true)
         // The data-protection keychain needs a keychain-access-groups entitlement, which
         // ad-hoc signed builds don't have; the login keychain works everywhere.
-        if status == errSecMissingEntitlement { status = add(name, data, dataProtection: false) }
+        if status == errSecMissingEntitlement { status = add(name, data, hint: hint, dataProtection: false) }
         guard status == errSecSuccess else { throw SecretStoreError.keychain(status) }
     }
 
@@ -67,9 +92,10 @@ struct KeychainStore: SecretStore {
         }
     }
 
-    private func add(_ name: String, _ data: Data, dataProtection: Bool) -> OSStatus {
+    private func add(_ name: String, _ data: Data, hint: String, dataProtection: Bool) -> OSStatus {
         var item = base(name, dataProtection: dataProtection)
         item[kSecValueData as String] = data
+        item[kSecAttrComment as String] = hint
         item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
         item[kSecAttrLabel as String] = "Subtitler API key (\(name))"
         return SecItemAdd(item as CFDictionary, nil)
@@ -95,6 +121,8 @@ final class MemorySecretStore: SecretStore, @unchecked Sendable {
     init(_ secrets: [String: String] = [:]) { self.secrets = secrets }
 
     func read(_ name: String) -> String? { lock.withLock { secrets[name] } }
+    func contains(_ name: String) -> Bool { read(name) != nil }
+    func hint(_ name: String) -> String? { read(name).map(SecretHint.of) }
     func save(_ secret: String, for name: String) throws { lock.withLock { secrets[name] = secret } }
     func delete(_ name: String) throws { _ = lock.withLock { secrets.removeValue(forKey: name) } }
 }

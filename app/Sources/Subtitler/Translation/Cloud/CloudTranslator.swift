@@ -33,7 +33,7 @@ actor CloudTranslator: BatchTranslating {
 
     func start() async throws {
         try CloudHTTP.validate(baseURL)
-        if provider.keyRequired, secrets.read(provider.id)?.isEmpty != false { throw CloudError.missingKey(provider.name) }
+        if provider.keyRequired, !secrets.contains(provider.id) { throw CloudError.missingKey(provider.name) }
     }
 
     func stop() async {}
@@ -131,7 +131,7 @@ struct CloudConfig {
     /// Ready to use: a key saved (when needed), and for Custom an address and a model.
     func isConfigured(_ provider: CloudProvider, secrets: SecretStore) -> Bool {
         guard baseURL(for: provider) != nil, !model(for: provider).isEmpty else { return false }
-        return !provider.keyRequired || secrets.read(provider.id)?.isEmpty == false
+        return !provider.keyRequired || secrets.contains(provider.id)
     }
 
     func translator(for provider: CloudProvider, secrets: SecretStore,

@@ -173,10 +173,13 @@ actor FakeBatchTranslator: BatchTranslating {
         try store.save("sk-test-FAKE-1234", for: "openai")
         #expect(store.read("openai") == "sk-test-FAKE-1234")
         #expect(store.hint("openai") == "••••1234")
+        #expect(store.contains("openai"))
         try store.save("sk-test-FAKE-5678", for: "openai") // replace
         #expect(store.read("openai") == "sk-test-FAKE-5678")
+        #expect(store.hint("openai") == "••••5678")
         try store.delete("openai")
         #expect(store.read("openai") == nil)
+        #expect(!store.contains("openai") && store.hint("openai") == nil)
     }
 }
 
