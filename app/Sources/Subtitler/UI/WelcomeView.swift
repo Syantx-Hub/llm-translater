@@ -13,11 +13,11 @@ struct WelcomeView: View {
     @StateObject private var flow: Flow
 
     private var step: Step { flow.step }
-    private var hasPermission: Bool { flow.hasPermission }
+    private var hasPermission: Bool { flow.permission == .granted }
 
     final class Flow: ObservableObject {
         @Published var step: Step
-        @Published var hasPermission = CGPreflightScreenCaptureAccess()
+        @Published var permission = AudioPermission.status()
 
         init(step: Step) { self.step = step }
     }
@@ -94,7 +94,7 @@ struct WelcomeView: View {
     private var translation: some View {
         stepLayout(
             title: "Choose a translation model",
-            subtitle: "This turns the text into your subtitle language. You can skip this and show the original text instead."
+            subtitle: "This turns the text into your subtitle language. Skip it to show the original words only — you can add translation later."
         ) {
             Picker("Subtitles in", selection: $state.targetLanguage) {
                 ForEach(Languages.all) { Text($0.name).tag($0.code) }
@@ -112,30 +112,38 @@ struct WelcomeView: View {
                 .font(.system(size: 52))
                 .foregroundStyle(hasPermission ? Color.green : Color.accentColor)
             Text("Let Subtitler hear your Mac").font(.title2.weight(.semibold))
-            Text("macOS lets apps hear system audio through the Screen Recording permission. Subtitler only uses the audio, never stores it, and it never leaves your Mac.")
+            Text(AudioCaptureFactory.usesScreenRecording
+                 ? "On this version of macOS, apps hear system audio through the Screen Recording permission. Subtitler only uses the audio — it never looks at your screen."
+                 : "Subtitler needs the System Audio Recording permission. It only hears what your Mac plays — it never sees your screen, and audio is never stored or sent anywhere.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: 460)
-            if hasPermission {
+            switch flow.permission {
+            case .granted:
                 Label("Permission granted", systemImage: "checkmark").foregroundStyle(.green)
-            } else {
+            case .denied:
+                Text("\(AudioPermission.name) is turned off for Subtitler. Turn it on in System Settings.")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+                Button("Open System Settings") { NSWorkspace.shared.open(AudioPermission.settingsURL) }
+                    .buttonStyle(.borderedProminent)
+            case .unknown:
                 HStack {
                     Button("Allow…") {
-                        flow.hasPermission = CGRequestScreenCaptureAccess()
+                        Task { flow.permission = await AudioPermission.request() }
                     }
                     .buttonStyle(.borderedProminent)
-                    Button("Open System Settings") {
-                        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
-                    }
+                    Button("Open System Settings") { NSWorkspace.shared.open(AudioPermission.settingsURL) }
                 }
-                Text("After allowing it in System Settings you may need to reopen Subtitler.")
+                Text("You can also skip this; macOS will ask the first time you press Start.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             Spacer()
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            flow.hasPermission = CGPreflightScreenCaptureAccess()
+        // Pick up a change made in System Settings without reopening the app.
+        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
+            flow.permission = AudioPermission.status()
         }
     }
 
@@ -177,8 +185,8 @@ struct WelcomeView: View {
                 if hasTranslationChoice {
                     Button("Continue") { move(1) }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
                 } else {
-                    Button("Skip") {
-                        store.selectedTranslation = ModelStore.translationOff
+                    Button("Skip — transcribe only") {
+                        state.mode = .transcribe
                         move(1)
                     }
                 }
@@ -230,7 +238,13 @@ struct WelcomeView: View {
     }
 
     private func move(_ delta: Int) {
-        guard let next = Step(rawValue: step.rawValue + delta) else { return }
+        guard var next = Step(rawValue: step.rawValue + delta) else { return }
+        // Nothing to ask for when the permission is already granted.
+        if next == .permission, AudioPermission.status() == .granted {
+            flow.permission = .granted
+            guard let skipped = Step(rawValue: next.rawValue + delta) else { return }
+            next = skipped
+        }
         withAnimation(.easeOut(duration: 0.2)) { flow.step = next }
     }
 

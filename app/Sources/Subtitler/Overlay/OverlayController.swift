@@ -26,8 +26,8 @@ final class OverlayController {
     private let panel = OverlayPanel()
     private var screenObserver: NSObjectProtocol?
 
-    init(state: AppState) {
-        panel.contentView = NSHostingView(rootView: SubtitleOverlayView(state: state))
+    init(state: AppState, style: CaptionStyle) {
+        panel.contentView = NSHostingView(rootView: SubtitleOverlayView(state: state, style: style))
         screenObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
         ) { [weak self] _ in
@@ -44,14 +44,10 @@ final class OverlayController {
         panel.orderOut(nil)
     }
 
-    /// Bottom 40% of the main screen, inset from the edges; subtitles sit at its bottom.
+    /// Covers the whole main screen; CaptionLayer positions the text inside it, so style
+    /// changes (position, width, offset) apply without moving the window.
     private func layout() {
         guard let screen = NSScreen.main else { return }
-        let frame = screen.frame
-        let width = frame.width * 0.84
-        panel.setFrame(
-            NSRect(x: frame.midX - width / 2, y: frame.minY + frame.height * 0.04,
-                   width: width, height: frame.height * 0.4),
-            display: true)
+        panel.setFrame(screen.frame, display: true)
     }
 }

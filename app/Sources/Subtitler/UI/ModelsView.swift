@@ -50,13 +50,9 @@ struct ModelsView: View {
         }
     }
 
-    /// Show-original mode, plus the Python sidecar engines in development builds.
+    /// The Python sidecar engines, in development builds only.
     private var translationFallback: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Toggle("Don't translate — show the original text", isOn: Binding(
-                get: { store.selectedTranslation == ModelStore.translationOff },
-                set: { off in store.selectedTranslation = off ? ModelStore.translationOff : ModelCatalog.defaultTranslation }
-            ))
             if store.sidecarAvailable {
                 Picker("Developer engine", selection: Binding(
                     get: { store.selectedTranslation.hasPrefix(ModelStore.sidecarPrefix) ? store.selectedTranslation : "" },

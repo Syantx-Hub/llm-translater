@@ -31,6 +31,12 @@ actor Transcriber {
 
     var isLoaded: Bool { whisper != nil }
 
+    /// Runs one throwaway decode so the first real line doesn't pay for GPU/ANE setup.
+    func warmUp() async {
+        let noise = (0..<16_000).map { _ in Float.random(in: -0.001...0.001) }
+        _ = try? await transcribe(noise, language: "en")
+    }
+
     /// - Parameter language: Whisper code, or nil to auto-detect.
     func transcribe(_ samples: [Float], language: String?) async throws -> Result? {
         guard let whisper else { return nil }

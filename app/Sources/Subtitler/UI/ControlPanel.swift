@@ -19,6 +19,7 @@ struct ControlPanel: View {
             }
             Divider()
             HStack {
+                Button("Captions…") { show("captions") }
                 Button("Models…") { show("models") }
                 Spacer()
                 Button("Quit") { NSApplication.shared.terminate(nil) }
@@ -53,28 +54,45 @@ struct ControlPanel: View {
 
     private var settings: some View {
         VStack(alignment: .leading, spacing: 10) {
+            Picker("", selection: $state.mode) {
+                ForEach(CaptionMode.allCases) { Text($0.label).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+
             Form {
                 Picker("Spoken language", selection: $state.sourceLanguage) {
                     Text(autoLabel).tag(Languages.auto)
                     ForEach(Languages.all) { Text($0.name).tag($0.code) }
                 }
-                Picker("Subtitles in", selection: $state.targetLanguage) {
-                    ForEach(Languages.all) { Text($0.name).tag($0.code) }
+                if state.mode == .translate {
+                    Picker("Subtitles in", selection: $state.targetLanguage) {
+                        ForEach(Languages.all) { Text($0.name).tag($0.code) }
+                    }
                 }
-                Slider(value: $state.fontSize, in: 20...64) { Text("Text size") }
-                Toggle("Show original under translation", isOn: $state.showOriginal)
+                Picker("Responsiveness", selection: $state.responsiveness) {
+                    ForEach(Responsiveness.allCases) { Text($0.label).tag($0) }
+                }
+                if state.mode == .translate {
+                    Toggle("Translate while speaking", isOn: $state.translateDrafts)
+                }
             }
             .disabled(state.isRunning || state.isBusy)
 
+            Text(state.responsiveness.detail)
+                .font(.caption).foregroundStyle(.secondary)
+
             VStack(alignment: .leading, spacing: 3) {
                 modelRow("waveform", models.speechModel?.name ?? "No speech model")
-                modelRow("character.bubble", translationName)
+                if state.mode == .translate {
+                    modelRow("character.bubble", translationName)
+                }
             }
             .font(.caption)
             .foregroundStyle(.secondary)
 
             if state.isRunning || state.isBusy {
-                Text("Changes apply the next time you start.")
+                Text("Changes apply the next time you start. Caption style changes apply right away.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -108,7 +126,7 @@ struct ControlPanel: View {
         switch state.phase {
         case .idle: "Stopped"
         case .loading(let message): message
-        case .running: "Listening to system audio"
+        case .running: state.latency.map { String(format: "Listening · lag %.1f s", $0) } ?? "Listening to system audio"
         case .failed(let message): message
         }
     }

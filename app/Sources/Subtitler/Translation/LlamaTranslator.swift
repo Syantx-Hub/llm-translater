@@ -51,10 +51,15 @@ actor LlamaTranslator: Translator {
             throw LlamaError.loadFailed(modelPath)
         }
         let chain = llama_sampler_chain_init(llama_sampler_chain_default_params())
+        // Mild repetition penalty: greedy MT decoding otherwise loops on long inputs.
+        let vocabSize = llama_vocab_n_tokens(llama_model_get_vocab(model))
+        llama_sampler_chain_add(chain, llama_sampler_init_penalties(vocabSize, 64, 1.15, 0, 0))
         llama_sampler_chain_add(chain, llama_sampler_init_greedy())
         self.model = model
         self.context = context
         self.sampler = chain
+        // The first decode compiles Metal kernels (~1-2 s); do it now, not on the first line.
+        _ = try? await translate("Hello.", from: "en", to: "my", context: [])
     }
 
     func translate(_ text: String, from source: String, to target: String, context lines: [String]) async throws -> String {
@@ -73,7 +78,9 @@ actor LlamaTranslator: Translator {
         var token = llama_model_decoder_start_token(model)
         if token == LLAMA_TOKEN_NULL { token = llama_vocab_bos(vocab) }
         var output: [llama_token] = []
-        for _ in 0..<maxOutputTokens {
+        // Burmese needs roughly 2-3x the tokens of the source; more than that is a loop.
+        let limit = min(maxOutputTokens, input.count * 4 + 16)
+        for _ in 0..<limit {
             let decoded = withUnsafeMutablePointer(to: &token) {
                 llama_decode(context, llama_batch_get_one($0, 1))
             }
@@ -81,6 +88,7 @@ actor LlamaTranslator: Translator {
             token = llama_sampler_sample(sampler, context, -1)
             if llama_vocab_is_eog(vocab, token) { break }
             output.append(token)
+            if Self.isLooping(output) { output.removeLast(8); break }
             try Task.checkCancellation()
         }
         return detokenize(output, vocab: vocab).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -93,6 +101,12 @@ actor LlamaTranslator: Translator {
         sampler = nil
         context = nil
         model = nil
+    }
+
+    /// True when the last 8 tokens repeat the 8 before them.
+    static func isLooping(_ tokens: [llama_token]) -> Bool {
+        guard tokens.count >= 16 else { return false }
+        return tokens.suffix(8).elementsEqual(tokens.dropLast(8).suffix(8))
     }
 
     private func tokenize(_ text: String, vocab: OpaquePointer?) -> [llama_token] {

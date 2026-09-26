@@ -10,7 +10,23 @@ import Foundation
 final class SpeechSegmenter {
     enum Event {
         case partial([Float])
-        case final([Float])
+        /// `trailingSilence`: samples of silence at the end. A draft of the first
+        /// `count - trailingSilence` samples already heard every word.
+        case final([Float], trailingSilence: Int)
+    }
+
+    /// Trade-off between how soon a line appears and how much context Whisper gets.
+    struct Tuning: Equatable {
+        /// Silence that ends an utterance.
+        var endSilenceMS: Int
+        /// New speech between draft updates.
+        var draftEveryMS: Int
+        /// Longest utterance before it is cut at the quietest point.
+        var maxSeconds: Double
+
+        static let fast = Tuning(endSilenceMS: 360, draftEveryMS: 500, maxSeconds: 6)
+        static let balanced = Tuning(endSilenceMS: 480, draftEveryMS: 700, maxSeconds: 9)
+        static let accurate = Tuning(endSilenceMS: 700, draftEveryMS: 1000, maxSeconds: 14)
     }
 
     var onEvent: ((Event) -> Void)?
@@ -18,10 +34,17 @@ final class SpeechSegmenter {
     private let sampleRate = Int(SystemAudioCapture.sampleRate)
     private let frameSize = 480 // 30 ms
     private let preRollFrames = 10 // keep 300 ms before speech onset
-    private let endSilenceFrames = 20 // 600 ms of silence ends an utterance
     private let minSpeechFrames = 8 // ignore blips shorter than 240 ms
-    private let partialEverySamples = 16_000 // draft update every 1 s of new speech
-    private let maxSeconds = 12.0
+    private let pauseDraftFrames = 4 // a 120 ms pause triggers a draft of everything said
+    private let endSilenceFrames: Int
+    private let partialEverySamples: Int
+    private let maxSeconds: Double
+
+    init(tuning: Tuning = .balanced) {
+        endSilenceFrames = max(1, tuning.endSilenceMS / 30)
+        partialEverySamples = tuning.draftEveryMS * 16
+        maxSeconds = tuning.maxSeconds
+    }
 
     private var pending: [Float] = []
     private var preRoll: [[Float]] = []
@@ -76,6 +99,11 @@ final class SpeechSegmenter {
 
         if silenceFrames >= endSilenceFrames {
             endUtterance(emit: speechFrames >= minSpeechFrames)
+        } else if silenceFrames == pauseDraftFrames, speechFrames >= minSpeechFrames {
+            // Draft right as the speaker pauses: if the pause turns into the end of the
+            // utterance, the pipeline reuses this draft instead of decoding again.
+            samplesSincePartial = 0
+            onEvent?(.partial(utterance))
         } else if Double(utterance.count) >= maxSeconds * Double(sampleRate) {
             splitAtQuietestFrame()
         } else if samplesSincePartial >= partialEverySamples, speechFrames >= minSpeechFrames {
@@ -92,7 +120,7 @@ final class SpeechSegmenter {
         let quietest = frameEnergies[start...].indices.min { frameEnergies[$0] < frameEnergies[$1] } ?? frameEnergies.count
         let cut = max(quietest, 1) * frameSize
 
-        onEvent?(.final(Array(utterance.prefix(cut))))
+        onEvent?(.final(Array(utterance.prefix(cut)), trailingSilence: 0))
         utterance = Array(utterance.dropFirst(cut))
         frameEnergies = Array(frameEnergies.dropFirst(quietest))
         samplesSincePartial = utterance.count
@@ -101,7 +129,7 @@ final class SpeechSegmenter {
     }
 
     private func endUtterance(emit: Bool) {
-        if emit { onEvent?(.final(utterance)) }
+        if emit { onEvent?(.final(utterance, trailingSilence: silenceFrames * frameSize)) }
         utterance.removeAll()
         frameEnergies.removeAll()
         inSpeech = false

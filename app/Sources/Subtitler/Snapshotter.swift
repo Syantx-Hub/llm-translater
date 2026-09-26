@@ -10,14 +10,16 @@ enum Snapshotter {
     static func run(into directory: String) {
         _ = NSApplication.shared
         let models = ModelStore()
-        let state = AppState(models: models)
+        let style = CaptionStyle()
+        let state = AppState(models: models, style: style)
         let out = URL(fileURLWithPath: directory, isDirectory: true)
         try? FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
 
         var views: [(String, AnyView, NSSize)] = [
             ("models", AnyView(ModelsView(store: models)), NSSize(width: 700, height: 1180)),
-            ("panel", AnyView(ControlPanel(state: state, models: models)), NSSize(width: 360, height: 400)),
-            ("overlay", AnyView(SubtitleOverlayView(state: state).background(Color.gray)), NSSize(width: 1000, height: 320)),
+            ("panel", AnyView(ControlPanel(state: state, models: models)), NSSize(width: 360, height: 520)),
+            ("captions", AnyView(CaptionsView(state: state, style: style)), NSSize(width: 900, height: 700)),
+            ("overlay", AnyView(SubtitleOverlayView(state: state, style: style).background(Color.gray)), NSSize(width: 1000, height: 320)),
         ]
         for step in WelcomeView.Step.allCases {
             views.append(("welcome-\(step.rawValue)",

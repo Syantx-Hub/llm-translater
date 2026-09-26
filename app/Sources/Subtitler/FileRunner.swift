@@ -4,7 +4,8 @@ import Foundation
 /// Headless mode: runs an audio file through the same segmenter → ASR → translation
 /// pipeline as live capture and prints the subtitles. Needs no Screen Recording permission.
 ///
-///   Subtitler --file clip.m4a [--source en] [--target my] [--model SPEECH_ID] [--translator ID|sidecar:nllb|off] [--realtime]
+///   Subtitler --file clip.m4a [--source en] [--target my] [--model SPEECH_ID] [--translator ID|sidecar:nllb|off]
+///            [--responsiveness fast|balanced|accurate] [--realtime]
 ///
 /// Missing catalog models are downloaded first, into the same place the app uses.
 ///
@@ -15,7 +16,7 @@ enum FileRunner {
             arguments.firstIndex(of: name).flatMap { $0 + 1 < arguments.count ? arguments[$0 + 1] : nil }
         }
         guard let path = option("--file") else {
-            print("usage: Subtitler --file AUDIO [--source xx] [--target xx] [--model SPEECH_ID] [--translator ID|sidecar:nllb|off] [--realtime]")
+            print("usage: Subtitler --file AUDIO [--source xx] [--target xx] [--model SPEECH_ID] [--translator ID|sidecar:nllb|off] [--responsiveness fast|balanced|accurate] [--realtime]")
             print("models: " + ModelCatalog.all.map(\.id).joined(separator: ", "))
             return 2
         }
@@ -24,6 +25,7 @@ enum FileRunner {
         let speechID = option("--model") ?? ModelCatalog.recommendedSpeech
         let selection = option("--translator") ?? ModelCatalog.defaultTranslation
         let realtime = arguments.contains("--realtime")
+        let responsiveness = option("--responsiveness").flatMap(Responsiveness.init) ?? .balanced
 
         do {
             let samples = try loadAudio(URL(fileURLWithPath: path))
@@ -38,6 +40,7 @@ enum FileRunner {
             let speechFolder = try await ensureInstalled(speech)
             var t0 = Date()
             try await transcriber.load(model: speech.id, folder: speechFolder)
+            await transcriber.warmUp()
             print("[asr] loaded in \(String(format: "%.1f", Date().timeIntervalSince(t0))) s")
 
             if let model = ModelCatalog.model(id: selection) { _ = try await ensureInstalled(model) }
@@ -52,17 +55,18 @@ enum FileRunner {
                 transcriber: transcriber, translator: translator, source: source, target: target
             ) { update in
                 switch update {
-                case .draft(let text) where !text.isEmpty: print("[\(elapsed())] draft  \(text)")
+                case .draft(let caption?) where !caption.text.isEmpty:
+                    print("[\(elapsed())] draft\(caption.isTranslation ? "*" : " ") \(caption.text)")
                 case .draft: break
-                case .line(let original, let translation):
-                    print("[\(elapsed())] line   \(original)\n                  -> \(translation)")
+                case .line(let original, let translation, let latency):
+                    print("[\(elapsed())] line   \(original)\n                  -> \(translation)  (lag \(String(format: "%.2f", latency)) s)")
                 case .detectedLanguage(let code): print("[\(elapsed())] detected language: \(code)")
                 case .error(let message): print("[\(elapsed())] error  \(message)")
                 }
             }
 
             let (events, sink) = AsyncStream<SpeechSegmenter.Event>.makeStream()
-            let segmenter = SpeechSegmenter()
+            let segmenter = SpeechSegmenter(tuning: responsiveness.tuning)
             segmenter.onEvent = { sink.yield($0) }
             let pump = Task { for await event in events { await pipeline.submit(event) } }
 
@@ -135,4 +139,42 @@ private final class Counter: @unchecked Sendable {
         value = next
         return true
     }
+}
+
+/// Dev check for audio capture: `Subtitler --audio-probe` prints the permission status and,
+/// if granted, the loudness of 3 s of system audio. Never triggers a permission prompt.
+enum AudioProbe {
+    static func run() async -> Int32 {
+        let status = AudioPermission.status()
+        print("[probe] \(AudioPermission.name): \(status)")
+        guard status == .granted else { return 1 }
+        let capture = AudioCaptureFactory.make()
+        let meter = LoudnessMeter()
+        capture.onSamples = { meter.add($0) }
+        do {
+            try await capture.start()
+            try await Task.sleep(for: .seconds(3))
+            await capture.stop()
+        } catch {
+            print("[probe] error: \(error.localizedDescription)")
+            return 1
+        }
+        print(String(format: "[probe] %.1f s captured, RMS %.4f", Double(meter.count) / SystemAudioCapture.sampleRate, meter.rms))
+        return 0
+    }
+}
+
+private final class LoudnessMeter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var sum: Double = 0
+    private(set) var count = 0
+
+    func add(_ samples: [Float]) {
+        lock.lock()
+        defer { lock.unlock() }
+        sum += samples.reduce(0) { $0 + Double($1 * $1) }
+        count += samples.count
+    }
+
+    var rms: Double { count == 0 ? 0 : (sum / Double(count)).squareRoot() }
 }

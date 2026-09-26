@@ -8,6 +8,10 @@ enum Entry {
             MainActor.assumeIsolated { Snapshotter.run(into: CommandLine.arguments[index + 1]) }
             exit(0)
         }
+        if CommandLine.arguments.contains("--audio-probe") {
+            Task.detached { exit(await AudioProbe.run()) }
+            dispatchMain()
+        }
         guard CommandLine.arguments.contains("--file") else {
             SubtitlerApp.main()
             return
@@ -23,11 +27,14 @@ struct SubtitlerApp: App {
     @NSApplicationDelegateAdaptor private var appDelegate: AppDelegate
     @StateObject private var models: ModelStore
     @StateObject private var state: AppState
+    @StateObject private var style: CaptionStyle
 
     init() {
         let models = ModelStore()
+        let style = CaptionStyle()
         _models = StateObject(wrappedValue: models)
-        _state = StateObject(wrappedValue: AppState(models: models))
+        _style = StateObject(wrappedValue: style)
+        _state = StateObject(wrappedValue: AppState(models: models, style: style))
     }
 
     var body: some Scene {
@@ -48,6 +55,11 @@ struct SubtitlerApp: App {
         }
         .windowResizability(.contentSize)
         .windowStyle(.hiddenTitleBar)
+
+        Window("Captions", id: "captions") {
+            CaptionsView(state: state, style: style)
+        }
+        .windowResizability(.contentSize)
 
         Window("Models", id: "models") {
             ModelsView(store: models)

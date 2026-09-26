@@ -31,6 +31,8 @@
 	<true/>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>Subtitler listens to the audio your Mac is playing so it can show live subtitles. The audio is never stored and never leaves your Mac.</string>
 	<key>NSScreenCaptureUsageDescription</key>
 	<string>Subtitler listens to the audio your Mac is playing so it can show live translated subtitles. Nothing leaves your Mac.</string>
 	<!-- Development only: where python/translate_server.py lives. Filled in by scripts/build-app.sh. -->
