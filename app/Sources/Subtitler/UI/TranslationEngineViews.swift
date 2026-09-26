@@ -8,12 +8,35 @@ struct TranslationEnginePicker: View {
     let mode: CaptionMode
     /// Inside a Form, which lays out its own label column.
     var inForm = false
+    /// In the panel: notes go behind an ⓘ instead of lines under the picker.
+    var compact = false
     let openModels: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            if inForm { picker } else { FieldRow("Translate with") { picker } }
-            remark
+            if inForm {
+                picker
+                remark
+            } else if compact {
+                FieldRow("Translate with") {
+                    HStack(spacing: 4) {
+                        picker
+                        InfoButton(label: "About this translator") { remark }
+                    }
+                }
+                if models.cloudProvider != nil, mode == .translate {
+                    NoticeRow(symbol: "exclamationmark.triangle", text: "Cloud adds lag in live mode.", tone: .caution)
+                } else if models.cloudProvider == nil, models.translationModel == nil,
+                          !models.selectedTranslation.hasPrefix(ModelStore.sidecarPrefix) {
+                    HStack(spacing: 6) {
+                        NoticeRow(symbol: "arrow.down.circle", text: "No translation model yet.", tone: .caution)
+                        Button("Models…", action: openModels).buttonStyle(.link).font(.caption)
+                    }
+                }
+            } else {
+                FieldRow("Translate with") { picker }
+                remark
+            }
         }
     }
 
@@ -97,8 +120,42 @@ struct CloudEstimateView: View {
     let freeTier: Bool
     /// The chosen model, for its published free limits.
     var model = ""
+    /// In the panel: one line, details behind an ⓘ (with the character notes).
+    var notesFile: URL?
+    var compact = false
 
     var body: some View {
+        if compact { compactBody } else { fullBody }
+    }
+
+    private var compactBody: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 4) {
+            if estimate.requests == 0 {
+                NoticeRow(symbol: "checkmark.circle", text: "Cached: watching again sends nothing.", tone: .done)
+            } else {
+                NoticeRow(symbol: "paperplane", text: "≈ \(estimate.requests) requests, \(estimate.durationText)")
+            }
+            InfoButton(label: "About the cloud translation") {
+                CloudPrivacyLine(provider: provider)
+                if estimate.requests > 0 { Text(summary).foregroundStyle(.secondary) }
+                details
+                Divider()
+                CharacterNotesField(file: notesFile)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var details: some View {
+        Text("\(estimate.cues) lines make \(estimate.groups) sentences, sent \(CloudTranslator.defaultBatchSize) at a time, plus one request to work out who's who. Saved next to the file, so watching again sends nothing.")
+            .foregroundStyle(.secondary)
+        if freeTier, let limits = provider.model(model)?.freeLimits {
+            Text("Free tier, approximate: \(limitText(limits)).").foregroundStyle(.secondary)
+        }
+        if let page = provider.pricingPage { Link("\(provider.name) pricing", destination: page) }
+    }
+
+    private var fullBody: some View {
         VStack(alignment: .leading, spacing: 4) {
             if estimate.requests == 0 {
                 NoticeRow(symbol: "checkmark.circle", text: "Cached: watching again sends nothing.", tone: .done)

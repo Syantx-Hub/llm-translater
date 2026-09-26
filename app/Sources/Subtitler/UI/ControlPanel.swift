@@ -47,17 +47,40 @@ struct ControlPanel: View {
             if models.needsSetup && !locked {
                 setupPrompt
             } else {
-                if !state.isRunning {
-                    CaptionPreview(style: style, mode: state.mode, language: previewLanguage)
-                }
-                ModeChooser(mode: $state.mode)
-                    .disabled(locked)
+                modeTabs
                 settings
-                LearnMore(title: "How \(state.mode.label) works") {
-                    StepList(steps: state.mode.steps)
-                }
             }
             messages
+        }
+    }
+
+    /// The three ways to use Subtitler, as tabs, with one line on what the chosen one does.
+    private var modeTabs: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Picker("Mode", selection: $state.mode) {
+                ForEach(CaptionMode.allCases) { mode in
+                    Text(mode == .transcribe ? "Transcribe" : mode.label).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .disabled(locked)
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text(state.mode.purpose)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                InfoButton(label: "How \(state.mode.label) works") {
+                    Text("How it works").font(.headline)
+                    StepList(steps: state.mode.steps)
+                    Text(state.mode.bestFor).foregroundStyle(.secondary)
+                    if state.mode == .synced {
+                        Divider()
+                        Text("Why a subtitle file?").font(.headline)
+                        ForEach(CaptionMode.whySubtitleFile, id: \.self) { Text($0).foregroundStyle(.secondary) }
+                    }
+                }
+            }
         }
     }
 
@@ -124,42 +147,27 @@ struct ControlPanel: View {
             case .translate:
                 spokenLanguage
                 subtitleLanguage(label: "Subtitles in")
-                TranslationEnginePicker(models: models, mode: .translate) { show("models") }
-                responsiveness
-                unclearLines
+                TranslationEnginePicker(models: models, mode: .translate, compact: true) { show("models") }
+                options
             case .transcribe:
                 spokenLanguage
-                responsiveness
-                unclearLines
+                options
             case .synced:
                 syncSettings
             }
-            if locked {
-                HelpNote("Changes apply the next time you start. Caption style changes apply right away.")
-            }
         }
         .disabled(locked && state.mode != .synced)
+        .help(locked ? "Stop to change these. Caption style changes apply right away." : "")
     }
 
     private var spokenLanguage: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            FieldRow("Spoken language") {
-                Picker("Spoken language", selection: $state.sourceLanguage) {
-                    Text(autoLabel).tag(Languages.auto)
-                    ForEach(Languages.all) { Text($0.name).tag($0.code) }
-                }
-            }
-            if state.sourceLanguage == Languages.auto {
-                HelpNote("Detects the language and follows the video if it changes.")
-            }
-            if models.speechModel?.isBuiltIn == true {
-                if state.sourceLanguage == Languages.auto {
-                    Toggle("Switch to Apple Speech once the language is known", isOn: $state.appleAutoHandover)
-                        .font(.caption)
-                }
-                HelpNote("Apple Speech is instant in quiet audio; Whisper copes better with music and noise.")
+        FieldRow("Spoken language") {
+            Picker("Spoken language", selection: $state.sourceLanguage) {
+                Text(autoLabel).tag(Languages.auto)
+                ForEach(Languages.all) { Text($0.name).tag($0.code) }
             }
         }
+        .help("Auto-detect follows the video, even if the language changes.")
     }
 
     private func subtitleLanguage(label: String) -> some View {
@@ -170,22 +178,25 @@ struct ControlPanel: View {
         }
     }
 
-    private var responsiveness: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            FieldRow("Speed") {
-                Picker("Speed", selection: $state.responsiveness) {
-                    ForEach(Responsiveness.allCases) { Text($0.label).tag($0) }
+    /// Settings most people never change, folded away.
+    private var options: some View {
+        LearnMore(title: "Options") {
+            VStack(alignment: .leading, spacing: 8) {
+                FieldRow("Speed") {
+                    Picker("Speed", selection: $state.responsiveness) {
+                        ForEach(Responsiveness.allCases) { Text($0.label).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
                 }
-                .pickerStyle(.segmented)
+                .help(state.responsiveness.detail)
+                Toggle("Hide lines that were hard to hear", isOn: $state.hidesUnclearLines)
+                    .help("Skips lines the speech model wasn't sure about, instead of showing misheard words.")
+                if models.speechModel?.isBuiltIn == true, state.sourceLanguage == Languages.auto {
+                    Toggle("Switch to Apple Speech once the language is known", isOn: $state.appleAutoHandover)
+                }
             }
-            HelpNote(state.responsiveness.detail)
-        }
-    }
-
-    private var unclearLines: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Toggle("Hide lines that were hard to hear", isOn: $state.hidesUnclearLines)
-            HelpNote("Skips lines the speech model wasn't sure about, instead of showing misheard words.")
+            .foregroundStyle(.primary)
+            .font(.body)
         }
     }
 
@@ -200,9 +211,8 @@ struct ControlPanel: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(state.syncFile?.lastPathComponent ?? "No subtitle file yet")
                         .lineLimit(1).truncationMode(.middle)
-                    if !state.syncCues.isEmpty {
-                        Text("\(state.syncCues.count) lines").font(.caption).foregroundStyle(.secondary)
-                    }
+                    Text(state.syncCues.isEmpty ? "In the language being spoken" : "\(state.syncCues.count) lines")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
             }
@@ -211,12 +221,6 @@ struct ControlPanel: View {
                 Button("Find Online…") { show("find-subtitles") }
             }
             .disabled(locked)
-            if state.syncCues.isEmpty {
-                HelpNote("Use subtitles in the language being spoken (e.g. Korean subtitles for a Korean drama). Subtitler listens to find its place, then shows them translated.")
-            }
-            LearnMore(title: "Why a subtitle file?") {
-                ForEach(CaptionMode.whySubtitleFile, id: \.self) { Text($0) }
-            }
             if !state.syncCues.isEmpty {
                 VStack(alignment: .leading, spacing: 10) {
                     FieldRow("File is in") {
@@ -225,14 +229,12 @@ struct ControlPanel: View {
                         }
                     }
                     subtitleLanguage(label: "Translate to")
-                    TranslationEnginePicker(models: models, mode: .synced) { show("models") }
+                    TranslationEnginePicker(models: models, mode: .synced, compact: true) { show("models") }
                     if let provider = models.cloudProvider, let estimate = state.syncEstimate(models: models) {
                         CloudEstimateView(estimate: estimate, provider: provider,
                                           freeTier: models.cloudConfig.usesFreeTier(provider),
-                                  model: models.cloudConfig.model(for: provider))
-                    }
-                    if models.cloudProvider != nil {
-                        CharacterNotesField(file: state.syncFile)
+                                          model: models.cloudConfig.model(for: provider),
+                                          notesFile: state.syncFile, compact: true)
                     }
                 }
                 .disabled(locked)
@@ -241,8 +243,10 @@ struct ControlPanel: View {
                     if let file = state.syncFile { subtitleJob.load(file) }
                     show("subtitles")
                 }
+                .buttonStyle(.link)
+                .font(.callout)
                 .disabled(locked)
-                HelpNote("Writes the translation next to the file, so any video player can show it.")
+                .help("Writes the translation next to the file, so any video player can show it.")
             }
             syncStatusRow
         }
@@ -259,7 +263,7 @@ struct ControlPanel: View {
                         .disabled(state.syncOffset == 0)
                 }
             }
-            HelpNote("If lines show a little early or late, nudge them. Applies immediately.")
+            .help("If lines show a little early or late, nudge them. Applies immediately.")
         }
     }
 
@@ -275,20 +279,18 @@ struct ControlPanel: View {
         case .searching?:
             NoticeRow(symbol: "ear", text: "Listening for dialogue to find your place in the video…")
         case .synced(let time)?:
-            NoticeRow(symbol: "link", text: "In sync at \(Self.clock(time)). Lines show on the file's own time.", tone: .done)
+            NoticeRow(symbol: "link", text: "In sync at \(Self.clock(time))", tone: .done)
         case .paused(let time)?:
-            NoticeRow(symbol: "pause.circle", text: "Paused at \(Self.clock(time)). Resumes with the video.")
+            NoticeRow(symbol: "pause.circle", text: "Paused at \(Self.clock(time))")
         case nil:
-            if !state.syncCues.isEmpty {
-                HelpNote("Press Start while the video plays; the first clear line of dialogue syncs it.")
-            }
+            EmptyView()
         }
         if let provider = models.cloudProvider, state.isRunning {
             RateLimitCountdown(provider: provider.name)
             switch state.syncCloudStatus {
             case .translating(let done, let total, _)?:
                 ProgressView(value: Double(done), total: Double(max(total, 1))) {
-                    Text("Translating the file with \(provider.name): \(done) of \(total) lines").font(.caption)
+                    Text("Translating ahead: \(done) of \(total)").font(.caption)
                 }
             case .finished?:
                 NoticeRow(symbol: "checkmark.circle", text: "Whole file translated and saved; watching again sends nothing.", tone: .done)

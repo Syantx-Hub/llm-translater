@@ -144,6 +144,29 @@ struct LearnMore<Content: View>: View {
     }
 }
 
+/// An ⓘ button that shows details in a popover, so explanations don't crowd the panel.
+struct InfoButton<Content: View>: View {
+    var label = "More information"
+    var symbol = "info.circle"
+    @ViewBuilder var content: Content
+    @StateObject private var open = Flag()
+
+    var body: some View {
+        Button { open.value.toggle() } label: { Image(systemName: symbol) }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.secondary)
+            .help(label)
+            .accessibilityLabel(label)
+            .popover(isPresented: $open.value, arrowEdge: .trailing) {
+                VStack(alignment: .leading, spacing: 8) { content }
+                    .font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(width: 280, alignment: .leading)
+                    .padding(14)
+            }
+    }
+}
+
 /// A notice line: calm by default, orange for things that cost time or money.
 struct NoticeRow: View {
     enum Tone { case info, caution, done }
