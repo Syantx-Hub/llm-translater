@@ -427,6 +427,22 @@ background. By the time the line ends, its translation is usually done or nearly
 When a line finishes, a background translation of text the line doesn't start with is
 cancelled so the line never waits behind it.
 
+### Unclear lines and context
+
+Translation can't fix misheard words, so two things reduce them:
+
+- **Hide lines that were hard to hear** (on by default). Whisper's confidence is the
+  average token probability, exp(mean log-probability); Apple Speech's is the average of
+  its per-word `transcriptionConfidence`. Lines below 0.6 (Whisper) or 0.5 (Apple), and
+  Whisper output that repeats itself (compression ratio above 2.4), are dropped rather
+  than shown and translated; the panel counts them. On an M2, clear speech scored
+  0.92–0.98 with Whisper, while speech buried in noise came back as unrelated words at
+  0.56. The filter can't catch a *confident* mishearing: Apple heard 받았어 as 맞았어 at 0.93.
+- **Context prompt.** The last two finished lines are passed to Whisper as its prompt
+  (`promptTokens`, at most 100 tokens) so names and terms are heard consistently. It is
+  left out while a change of language may be under way, because a prompt pulls Whisper
+  towards the language it's written in.
+
 ### Streaming recognizers
 
 Apple Speech bypasses the segmenter path. `submitVolatile` shows the words and translates
@@ -784,7 +800,7 @@ Notes:
 ## 15. Tests
 
 ```sh
-cd app && swift test                              # 85 tests, ~1–2 s
+cd app && swift test                              # 89 tests, ~1–2 s
 SUBTITLER_E2E=1 swift test --filter endToEnd      # real models, slow
 python3 -m unittest discover -s python/tests      # sidecar protocol
 ```

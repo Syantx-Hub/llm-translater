@@ -106,6 +106,9 @@ final class AppState: ObservableObject {
     @Published var appleAutoHandover: Bool { didSet { save(appleAutoHandover, "appleAutoHandover") } }
     /// Informational status (e.g. which engine is in use), shown less loudly than errors.
     @Published private(set) var notice: String?
+    /// Hide lines the recognizer was unsure about rather than show misheard words.
+    @Published var hidesUnclearLines: Bool { didSet { save(hidesUnclearLines, "hidesUnclearLines") } }
+    private var unclearCount = 0
 
     /// The language captions are written in: the target, or the spoken language when only transcribing.
     var captionLanguage: String {
@@ -146,6 +149,7 @@ final class AppState: ObservableObject {
             ?? (models.legacyTranscribeOnly ? .transcribe : .translate)
         responsiveness = defaults.string(forKey: "responsiveness").flatMap(Responsiveness.init) ?? .balanced
         appleAutoHandover = defaults.object(forKey: "appleAutoHandover") as? Bool ?? true
+        hidesUnclearLines = defaults.object(forKey: "hidesUnclearLines") as? Bool ?? true
     }
 
     /// Starts a session. The phase flips to loading immediately, so a double click can't
@@ -192,6 +196,7 @@ final class AppState: ObservableObject {
         previewOnScreen = false
         lastError = nil
         notice = nil
+        unclearCount = 0
         detectedLanguage = nil
         latency = nil
         // Snapshot the settings this session runs with; the pickers are disabled meanwhile.
@@ -227,6 +232,7 @@ final class AppState: ObservableObject {
                 target: sessionMode == .translate ? sessionTarget : nil,
                 // Finished sentences are translated in the background while someone speaks.
                 translateDrafts: sessionMode == .translate,
+                hidesUnclearLines: hidesUnclearLines,
                 emit: { [weak self] update in
                     DispatchQueue.main.async { self?.apply(update, session: id) }
                 })
@@ -305,7 +311,7 @@ final class AppState: ObservableObject {
             for await event in events {
                 switch event {
                 case .volatile(let text): await pipeline.submitVolatile(text)
-                case .final(let text, let ended): await pipeline.submitFinal(text, speechEndedAt: ended)
+                case .final(let text, let ended, let confidence): await pipeline.submitFinal(text, speechEndedAt: ended, confidence: confidence)
                 }
             }
         }
@@ -466,6 +472,9 @@ final class AppState: ObservableObject {
         case .detectedLanguage(let code):
             detectedLanguage = code
             followLanguage(code, session: id)
+        case .unclear:
+            unclearCount += 1
+            notice = "Hid \(unclearCount) line\(unclearCount == 1 ? "" : "s") that were hard to hear."
         case .error(let message):
             lastError = message
         }

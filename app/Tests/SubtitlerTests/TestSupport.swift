@@ -50,12 +50,20 @@ actor FakeTranscriber: SpeechTranscribing {
 
     func setSpoken(_ languages: [Int: String]) { spoken = languages }
 
-    func transcribe(_ samples: [Float], language requested: String?) async throws -> Transcript? {
+    /// Per sample count: how sure the "recognizer" is.
+    var confidences: [Int: Double] = [:]
+    private(set) var prompts: [String?] = []
+
+    func setConfidences(_ values: [Int: Double]) { confidences = values }
+
+    func transcribe(_ samples: [Float], language requested: String?, prompt: String?) async throws -> Transcript? {
         calls.append(samples.count)
+        prompts.append(prompt)
         if let delay { try await Task.sleep(for: delay) }
         guard let text = script[samples.count] else { return nil }
         // Like Whisper: a forced language is used as is; otherwise the spoken one is detected.
-        return Transcript(text: text, language: requested ?? spoken[samples.count] ?? language)
+        return Transcript(text: text, language: requested ?? spoken[samples.count] ?? language,
+                          confidence: confidences[samples.count])
     }
 
     func detectLanguage(_ samples: [Float]) async throws -> String? {

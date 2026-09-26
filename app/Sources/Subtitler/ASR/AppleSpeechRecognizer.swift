@@ -41,7 +41,8 @@ final class AppleSpeechRecognizer: @unchecked Sendable {
     enum Event: Sendable {
         case volatile(String)
         /// `speechEndedAt`: wall-clock estimate of when the phrase ended, for lag.
-        case final(String, speechEndedAt: Date)
+        /// `confidence`: Apple's average word confidence, 0–1.
+        case final(String, speechEndedAt: Date, confidence: Double?)
     }
 
     /// Called on an arbitrary thread, in order.
@@ -65,7 +66,10 @@ final class AppleSpeechRecognizer: @unchecked Sendable {
     /// Installs the language's on-device assets if needed (a one-time download managed by
     /// macOS), then starts listening. `progress` reports the asset download.
     func start(progress: @escaping @Sendable (Double) -> Void) async throws {
-        let transcriber = SpeechTranscriber(locale: locale, preset: .progressiveTranscription)
+        // Progressive results plus per-word confidence, to hide lines Apple barely heard.
+        let transcriber = SpeechTranscriber(
+            locale: locale, transcriptionOptions: [], reportingOptions: [.volatileResults],
+            attributeOptions: [.transcriptionConfidence])
         if let request = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
             let observation = request.progress.observe(\.fractionCompleted) { value, _ in progress(value.fractionCompleted) }
             defer { observation.invalidate() }
@@ -89,7 +93,8 @@ final class AppleSpeechRecognizer: @unchecked Sendable {
                     if result.isFinal {
                         // Audio fed so far minus where the phrase ended = how long ago it ended.
                         let behind = max(0, self.audioFed - result.range.end.seconds)
-                        self.onEvent?(.final(text, speechEndedAt: Date().addingTimeInterval(-behind)))
+                        self.onEvent?(.final(text, speechEndedAt: Date().addingTimeInterval(-behind),
+                                             confidence: Self.confidence(of: result.text)))
                     } else {
                         self.onEvent?(.volatile(text))
                     }
@@ -135,6 +140,19 @@ final class AppleSpeechRecognizer: @unchecked Sendable {
         try? await analyzer?.finalizeAndFinishThroughEndOfInput()
         resultsTask?.cancel()
         analyzer = nil
+    }
+
+    /// Character-weighted average of the words' confidence.
+    private static func confidence(of text: AttributedString) -> Double? {
+        var total = 0.0
+        var weight = 0
+        for run in text.runs {
+            guard let value = run[AttributeScopes.SpeechAttributes.ConfidenceAttribute.self] else { continue }
+            let length = text[run.range].characters.count
+            total += value * Double(length)
+            weight += length
+        }
+        return weight > 0 ? total / Double(weight) : nil
     }
 
     private var audioFed: Double {

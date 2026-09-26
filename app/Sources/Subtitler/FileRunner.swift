@@ -68,6 +68,7 @@ enum FileRunner {
                 case .line(let original, let translation, let latency):
                     print("[\(elapsed())] line   \(original)\n                  -> \(translation)  (lag \(String(format: "%.2f", latency)) s)")
                 case .detectedLanguage(let code): print("[\(elapsed())] detected language: \(code)")
+                case .unclear(let text): print("[\(elapsed())] hidden (unclear) \(text)")
                 case .error(let message): print("[\(elapsed())] error  \(message)")
                 }
             }
@@ -118,7 +119,7 @@ enum FileRunner {
             for await event in events {
                 switch event {
                 case .volatile(let text): await pipeline.submitVolatile(text)
-                case .final(let text, let ended): await pipeline.submitFinal(text, speechEndedAt: ended)
+                case .final(let text, let ended, let confidence): await pipeline.submitFinal(text, speechEndedAt: ended, confidence: confidence)
                 }
             }
         }

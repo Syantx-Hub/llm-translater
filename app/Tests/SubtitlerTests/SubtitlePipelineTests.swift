@@ -190,6 +190,58 @@ import Testing
         #expect(detected == ["en"])
     }
 
+    // MARK: Unclear lines and context
+
+    @Test func unclearLinesAreHiddenInsteadOfTranslated() async {
+        let transcriber = FakeTranscriber(script: [100: "Clear line.", 200: "Mumbled wrods."])
+        await transcriber.setConfidences([100: 0.9, 200: 0.2])
+        let translator = FakeTranslator()
+        let (pipeline, updates) = pipeline(transcriber: transcriber, translator: translator, translateDrafts: false)
+
+        await pipeline.submit(.final(samples(100), trailingSilence: 0))
+        await pipeline.submit(.final(samples(200), trailingSilence: 0))
+        await pipeline.flush()
+
+        #expect(lines(updates).map(\.original) == ["Clear line."])
+        #expect(await translator.calls == ["Clear line."])
+        #expect(updates.values.contains(.unclear("Mumbled wrods.")))
+    }
+
+    @Test func unclearLinesShowWhenFilteringIsOff() async {
+        let transcriber = FakeTranscriber(script: [200: "Mumbled wrods."])
+        await transcriber.setConfidences([200: 0.2])
+        let updates = Recorder<SubtitlePipeline.Update>()
+        let pipeline = SubtitlePipeline(transcriber: transcriber, translator: FakeTranslator(), source: "en", target: "my",
+                                        translateDrafts: false, hidesUnclearLines: false) { updates.append($0) }
+
+        await pipeline.submit(.final(samples(200), trailingSilence: 0))
+        await pipeline.flush()
+
+        #expect(lines(updates).map(\.original) == ["Mumbled wrods."])
+    }
+
+    @Test func unclearStreamingPhrasesAreHidden() async {
+        let (pipeline, updates) = pipeline(transcriber: FakeTranscriber(script: [:]), translateDrafts: false)
+
+        await pipeline.submitFinal("Probably misheard.", speechEndedAt: Date(), confidence: 0.1)
+        await pipeline.submitFinal("Clearly heard.", speechEndedAt: Date(), confidence: 0.95)
+        await pipeline.flush()
+
+        #expect(lines(updates).map(\.original) == ["Clearly heard."])
+    }
+
+    @Test func recentLinesArePassedToWhisperAsContext() async {
+        let transcriber = FakeTranscriber(script: [100: "I'm Kim Jisoo.", 200: "Jisoo is my name.", 300: "Nice to meet you."])
+        let (pipeline, _) = pipeline(transcriber: transcriber, translateDrafts: false)
+
+        for count in [100, 200, 300] {
+            await pipeline.submit(.final(samples(count), trailingSilence: 0))
+            await pipeline.flush()
+        }
+
+        #expect(await transcriber.prompts == [nil, "I'm Kim Jisoo.", "I'm Kim Jisoo. Jisoo is my name."])
+    }
+
     @Test func silentFinalClearsTheDraftAndAddsNoLine() async {
         let (pipeline, updates) = pipeline(transcriber: FakeTranscriber(script: [:]))
 

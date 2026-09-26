@@ -92,6 +92,8 @@ struct ControlPanel: View {
                 Picker("Responsiveness", selection: $state.responsiveness) {
                     ForEach(Responsiveness.allCases) { Text($0.label).tag($0) }
                 }
+                Toggle("Hide lines that were hard to hear", isOn: $state.hidesUnclearLines)
+                    .help("Skips lines the speech model wasn't sure about, instead of showing (and translating) misheard words.")
             }
             .disabled(state.isRunning || state.isBusy)
 

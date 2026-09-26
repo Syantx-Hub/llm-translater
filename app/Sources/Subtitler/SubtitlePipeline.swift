@@ -29,8 +29,16 @@ actor SubtitlePipeline {
         /// `latency`: seconds from the end of speech to the translated line.
         case line(original: String, translation: String, latency: TimeInterval)
         case detectedLanguage(String)
+        /// A line was dropped because the recognizer was unsure what was said.
+        case unclear(String)
         case error(String)
     }
+
+    /// Below these, a line is more likely misheard than not. Measured on an M2: clear
+    /// speech scores 0.92–0.98 with Whisper, while speech buried in noise came out as
+    /// unrelated words at 0.56. Apple Speech's word confidences run on their own scale.
+    static let minWhisperConfidence = 0.6
+    static let minAppleConfidence = 0.5
 
     private struct Final {
         let samples: [Float]
@@ -43,6 +51,9 @@ actor SubtitlePipeline {
     /// nil when only transcribing.
     private let target: String?
     private let translateDrafts: Bool
+    /// Drop lines the recognizer was unsure about instead of showing (and translating)
+    /// words that were probably misheard.
+    private let hidesUnclearLines: Bool
     private let emitUpdate: @Sendable (Update) -> Void
     private var cancelled = false
 
@@ -71,7 +82,7 @@ actor SubtitlePipeline {
     /// Bumped per final; draft results from an older utterance are dropped.
     private var utterance = 0
     /// The newest draft of the current utterance: how many samples it covered and its text.
-    private var lastDraft: (count: Int, text: String)?
+    private var lastDraft: (count: Int, text: String, unclear: Bool)?
     private var pendingDraftText: String?
     private var draftTranslation: (text: String, task: Task<String?, Never>)?
     /// The latest finished draft translation of the current utterance.
@@ -87,13 +98,14 @@ actor SubtitlePipeline {
     private var committedSentences = 0
 
     init(transcriber: any SpeechTranscribing, translator: Translator, source: String?, target: String?,
-         translateDrafts: Bool = true, emit: @escaping @Sendable (Update) -> Void) {
+         translateDrafts: Bool = true, hidesUnclearLines: Bool = true, emit: @escaping @Sendable (Update) -> Void) {
         self.transcriber = transcriber
         self.translator = translator
         self.source = source
         self.autoDetect = source == nil
         self.target = target
         self.translateDrafts = translateDrafts
+        self.hidesUnclearLines = hidesUnclearLines
         self.emitUpdate = emit
     }
 
@@ -223,6 +235,18 @@ actor SubtitlePipeline {
         }
     }
 
+    private func isUnclear(_ transcript: Transcript) -> Bool {
+        transcript.looksRepetitive || (transcript.confidence.map { $0 < Self.minWhisperConfidence } ?? false)
+    }
+
+    /// Recent lines for Whisper's prompt, so names and terms are heard consistently. Left
+    /// out while the language may be changing, since a prompt pulls Whisper towards the
+    /// language it's written in.
+    private var prompt: String? {
+        guard source != nil, languageCandidate == nil, !context.isEmpty else { return nil }
+        return context.suffix(2).joined(separator: " ")
+    }
+
     /// Auto-detect decodes without a language hint so a change of language is noticed.
     private var decodeLanguage: String? { autoDetect ? nil : source }
 
@@ -244,7 +268,7 @@ actor SubtitlePipeline {
         observeLanguage(result.language, samples: samples.count)
         // Remember it even if the final already arrived: when the final adds nothing but
         // silence, it reuses this text instead of decoding again.
-        lastDraft = (samples.count, result.text)
+        lastDraft = (samples.count, result.text, isUnclear(result))
         // A waiting final supersedes this draft on screen.
         guard finals.isEmpty else { return }
         // Language is only locked from finals: a half-second draft is too short to trust.
@@ -324,8 +348,20 @@ actor SubtitlePipeline {
     }
 
     /// A finished phrase from a streaming recognizer.
-    func submitFinal(_ text: String, speechEndedAt: Date) {
+    func submitFinal(_ text: String, speechEndedAt: Date, confidence: Double? = nil) {
         guard !cancelled, !text.isEmpty else { return }
+        Trace.log("stream final confidence \(confidence.map { String(format: "%.2f", $0) } ?? "-")")
+        if hidesUnclearLines, let confidence, confidence < Self.minAppleConfidence {
+            committedSentences = 0
+            utterance += 1
+            pendingDraftText = nil
+            draftTranslation?.task.cancel()
+            draftTranslation = nil
+            translatedDraft = nil
+            liveSource = nil
+            dropUnclear(text)
+            return
+        }
         var sentences = Self.sentences(in: text)
         sentences.removeFirst(min(committedSentences, sentences.count))
         committedSentences = 0
@@ -346,14 +382,21 @@ actor SubtitlePipeline {
         commit(text, endedAt: speechEndedAt, inFlight: inFlight, finished: finished)
     }
 
+    private func dropUnclear(_ text: String) {
+        Trace.log("dropped unclear line: \(text)")
+        emit(.draft(nil))
+        emit(.unclear(text))
+    }
+
     // MARK: Finals
 
     private func finalize(_ final: Final) async {
         // Claim this utterance's draft work before moving to the next utterance.
-        let reusableText = lastDraft.flatMap { draft -> String? in
+        let reusable = lastDraft.flatMap { draft -> (text: String, unclear: Bool)? in
             let unheard = final.samples.count - draft.count
-            return unheard >= 0 && unheard <= final.trailingSilence ? draft.text : nil
+            return unheard >= 0 && unheard <= final.trailingSilence ? (draft.text, draft.unclear) : nil
         }
+        let reusableText = reusable?.text
         let inFlight = draftTranslation
         let finished = translatedDraft
         let lastDraftCount = lastDraft?.count
@@ -366,12 +409,21 @@ actor SubtitlePipeline {
 
         Trace.log("final \(Trace.seconds(final.samples.count)) waited \(String(format: "%.2f", Date().timeIntervalSince(final.endedAt)))s in queue; reuse \(reusableText != nil && source != nil ? "hit" : "miss") (draft covers \(lastDraftCount.map(Trace.seconds) ?? "-"), mt \(finished != nil ? "done" : inFlight != nil ? "running" : "none"))")
         let text: String
-        if let reusableText, source != nil {
-            text = reusableText
+        if let reusable, source != nil {
+            guard !(hidesUnclearLines && reusable.unclear) else {
+                dropUnclear(reusable.text)
+                return
+            }
+            text = reusable.text
         } else {
             do {
-                guard let result = try await transcriber.transcribe(final.samples, language: decodeLanguage) else {
+                guard let result = try await transcriber.transcribe(final.samples, language: decodeLanguage, prompt: prompt) else {
                     emit(.draft(nil))
+                    return
+                }
+                Trace.log("final asr confidence \(result.confidence.map { String(format: "%.2f", $0) } ?? "-")\(result.looksRepetitive ? " repetitive" : "")")
+                guard !(hidesUnclearLines && isUnclear(result)) else {
+                    dropUnclear(result.text)
                     return
                 }
                 detect(result.language)

@@ -4,14 +4,27 @@ import WhisperKit
 struct Transcript: Equatable, Sendable {
     let text: String
     let language: String
+    /// How sure the recognizer is, 0–1 (nil when it doesn't say). For Whisper this is the
+    /// average token probability, exp(mean log-probability).
+    var confidence: Double? = nil
+    /// True for output that looks like a hallucination: the same few words repeated.
+    var looksRepetitive = false
 }
 
 /// Speech-to-text as the pipeline sees it; tests substitute a fake.
 protocol SpeechTranscribing: Sendable {
-    /// - Parameter language: Whisper code, or nil to auto-detect. Returns nil for no speech.
-    func transcribe(_ samples: [Float], language: String?) async throws -> Transcript?
+    /// - Parameters:
+    ///   - language: Whisper code, or nil to auto-detect. Returns nil for no speech.
+    ///   - prompt: recent lines, so names and terms are heard consistently.
+    func transcribe(_ samples: [Float], language: String?, prompt: String?) async throws -> Transcript?
     /// The spoken language of `samples` (Whisper code), without transcribing them.
     func detectLanguage(_ samples: [Float]) async throws -> String?
+}
+
+extension SpeechTranscribing {
+    func transcribe(_ samples: [Float], language: String?) async throws -> Transcript? {
+        try await transcribe(samples, language: language, prompt: nil)
+    }
 }
 
 /// On-device speech recognition with WhisperKit (CoreML on the Neural Engine / GPU).
@@ -55,12 +68,12 @@ actor Transcriber: SpeechTranscribing {
 
     /// - Parameter language: Whisper code, or nil to auto-detect.
     /// Cancelling the calling task stops the decode early.
-    func transcribe(_ samples: [Float], language: String?) async throws -> Result? {
+    func transcribe(_ samples: [Float], language: String?, prompt: String?) async throws -> Result? {
         let previous = tail
         let work = Task { () async throws -> Result? in
             await previous?.value
             try Task.checkCancellation()
-            return try await self.decode(samples, language: language)
+            return try await self.decode(samples, language: language, prompt: prompt)
         }
         tail = Task { _ = try? await work.value }
         return try await withTaskCancellationHandler {
@@ -85,13 +98,20 @@ actor Transcriber: SpeechTranscribing {
         }
     }
 
-    private func decode(_ samples: [Float], language: String?) async throws -> Result? {
+    private func decode(_ samples: [Float], language: String?, prompt: String?) async throws -> Result? {
         guard let whisper else { return nil }
         var options = DecodingOptions()
         options.task = .transcribe
         options.language = language
         options.detectLanguage = language == nil
         options.usePrefillPrompt = language != nil
+        if let prompt, !prompt.isEmpty, let tokenizer = whisper.tokenizer {
+            // Whisper's context mechanism: earlier text before the start token. Kept to the
+            // last ~100 tokens, as longer prompts make Whisper echo them on silence.
+            let tokens = tokenizer.encode(text: " " + prompt).filter { $0 < tokenizer.specialTokens.specialTokenBegin }
+            options.promptTokens = Array(tokens.suffix(100))
+            options.usePrefillPrompt = true
+        }
         options.skipSpecialTokens = true
         options.withoutTimestamps = true
         options.suppressBlank = true
@@ -100,6 +120,13 @@ actor Transcriber: SpeechTranscribing {
         let results: [TranscriptionResult] = try await whisper.transcribe(audioArray: samples, decodeOptions: options)
         let text = results.map(\.text).joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !Self.hallucinations.contains(text.lowercased()) else { return nil }
-        return Transcript(text: text, language: results.first?.language ?? language ?? "")
+        let segments = results.flatMap(\.segments)
+        let tokenCount = segments.reduce(0) { $0 + max($1.tokens.count, 1) }
+        let meanLogProb = segments.reduce(0.0) { $0 + Double($1.avgLogprob) * Double(max($1.tokens.count, 1)) }
+            / Double(max(tokenCount, 1))
+        return Transcript(
+            text: text, language: results.first?.language ?? language ?? "",
+            confidence: segments.isEmpty ? nil : exp(meanLogProb),
+            looksRepetitive: segments.contains { $0.compressionRatio > 2.4 })
     }
 }
