@@ -31,7 +31,9 @@
 - **Burmese line breaking** relies on CoreText; syllable-aware breaking isn't verified.
 - **No automated session lifecycle test** (capture would need a fake).
 - **Permission checks use TCC SPI**; if Apple removes it, status shows as unknown.
-- **Distribution**: ad-hoc signed; shipping needs Developer ID, notarization, an updater.
+- **Distribution**: ad-hoc or self-signed; shipping needs Developer ID, notarization, an
+  updater. Until then the Keychain asks again after every rebuild (see
+  [Cloud translation](14-cloud-translation.md)).
 
 ## Ideas to explore next
 

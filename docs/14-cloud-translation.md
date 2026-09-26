@@ -101,6 +101,16 @@ exactly what would be sent. Provider quirks (checked against each provider's doc
 | Never logged: `SUBTITLER_TRACE` prints timings only; snapshots use an in-memory store | Logs and screenshots get shared. |
 | Timeouts; backoff on 429 using `retry-after`; stop on a used-up quota | Don't hang, and don't hammer a provider (or burn money) retrying something that won't succeed today. |
 
+### Why macOS asks twice after a rebuild
+
+A login-keychain item carries an access list and a *partition list*. For an app without an
+Apple team ID the partition is the build's exact code hash (`cdhash:…`), so after every
+rebuild macOS asks twice: may this app use the item, and (with your password) may this
+new build join its partition. Answer **Always Allow** to both and it stops until the next
+rebuild. A Developer ID build is partitioned by team ID (`teamid:…`), which stays the same
+across updates, so users are asked once. The data-protection keychain, which has no such
+prompts, needs a team-ID entitlement that self-signed builds can't have.
+
 ## Usage and cost (shown in the app)
 
 Everything here is **approximate**. Limits and prices change; the app always links the
