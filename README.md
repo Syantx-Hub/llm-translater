@@ -127,6 +127,7 @@ Subtitler=app/build/Subtitler.app/Contents/MacOS/Subtitler
 $Subtitler --file /tmp/test.aiff --source en --target my --realtime   # headless run, prints lag
 $Subtitler --file /tmp/test.aiff --responsiveness fast --translator off
 $Subtitler --translate-subtitles Movie.en.srt --target my             # translate a subtitle file
+$Subtitler --search-subtitles "breaking bad s01e01" --language en     # search OpenSubtitles (.env key)
 $Subtitler --audio-probe          # permission status + 3 s capture level (never prompts)
 $Subtitler --snapshot /tmp/ui     # renders every window to PNGs, light and dark
 ```

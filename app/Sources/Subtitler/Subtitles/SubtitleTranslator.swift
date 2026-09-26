@@ -152,3 +152,30 @@ enum SubtitleRunner {
         }
     }
 }
+
+/// Headless: `Subtitler --search-subtitles "breaking bad s01e01" [--language en]`, using the
+/// key from .env. Prints results only, never the key.
+enum SubtitleSearchRunner {
+    static func run(arguments: [String]) async -> Int32 {
+        func option(_ name: String) -> String? {
+            arguments.firstIndex(of: name).flatMap { $0 + 1 < arguments.count ? arguments[$0 + 1] : nil }
+        }
+        guard let text = option("--search-subtitles") else { return 2 }
+        guard let client = OpenSubtitlesClient.fromSecrets() else {
+            print("error: \(OpenSubtitlesError.missingAPIKey.localizedDescription)")
+            return 1
+        }
+        let query = SubtitleQuery.parse(text)
+        do {
+            let results = try await client.search(query, languages: [option("--language") ?? "en"])
+            print("[search] \(query.title)\(query.isEpisode ? " S\(query.season!)E\(query.episode!)" : ""): \(results.count) results")
+            for result in results.prefix(5) {
+                print("  \(result.savedFileName) · \(result.release) · \(result.downloads) downloads")
+            }
+            return 0
+        } catch {
+            print("error: \(error.localizedDescription)")
+            return 1
+        }
+    }
+}

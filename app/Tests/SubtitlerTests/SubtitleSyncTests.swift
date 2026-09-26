@@ -149,6 +149,79 @@ import Testing
         #expect(url.absoluteString == "https://api.opensubtitles.com/api/v1/subtitles?languages=en,ko&query=parasite")
     }
 
+    // MARK: TV episodes
+
+    @Test func parsesEpisodesTypedIntoTheTitle() {
+        #expect(SubtitleQuery.parse("breaking bad s01e01") == SubtitleQuery(title: "breaking bad", season: 1, episode: 1))
+        #expect(SubtitleQuery.parse("Breaking Bad S5E14") == SubtitleQuery(title: "Breaking Bad", season: 5, episode: 14))
+        #expect(SubtitleQuery.parse("breaking bad 1x01") == SubtitleQuery(title: "breaking bad", season: 1, episode: 1))
+        #expect(SubtitleQuery.parse("Breaking Bad season 1 episode 1") == SubtitleQuery(title: "Breaking Bad", season: 1, episode: 1))
+        #expect(SubtitleQuery.parse("Parasite") == SubtitleQuery(title: "Parasite", season: nil, episode: nil))
+        #expect(!SubtitleQuery.parse("1917").isEpisode) // a film title that is a number
+    }
+
+    @Test func episodeFieldsOverrideTheTitle() {
+        #expect(SubtitleQuery.parse("breaking bad s01e01", season: "2", episode: "3") == SubtitleQuery(title: "breaking bad", season: 2, episode: 3))
+    }
+
+    @Test func episodeSearchURLsUseTheShowAndSortedParameters() async {
+        let client = OpenSubtitlesClient(apiKey: "test")
+        let query = SubtitleQuery(title: "Breaking Bad", season: 1, episode: 1)
+        let byShow = await client.searchURL(query, languages: ["en"], showID: 8882)
+        #expect(byShow.absoluteString ==
+            "https://api.opensubtitles.com/api/v1/subtitles?episode_number=1&languages=en&parent_feature_id=8882&season_number=1&type=episode")
+        let byName = await client.searchURL(query, languages: ["en"], showID: nil)
+        #expect(byName.absoluteString ==
+            "https://api.opensubtitles.com/api/v1/subtitles?episode_number=1&languages=en&query=breaking+bad&season_number=1&type=episode")
+    }
+
+    @Test func parsesShowLookupAndEpisodeResults() throws {
+        let features = #"{"data": [{"id": "8882", "type": "tvshow", "attributes": {"title": "breaking bad", "feature_id": "8882"}}]}"#
+        #expect(OpenSubtitlesClient.parseShowID(Data(features.utf8)) == 8882)
+
+        let episodes = """
+        {"data": [
+          {"id": "1", "attributes": {"language": "en", "download_count": 900, "release": "Breaking Bad S01E01 Pilot",
+            "feature_details": {"title": "Pilot", "parent_title": "Breaking Bad", "year": 2008, "season_number": 1, "episode_number": 1},
+            "files": [{"file_id": 11, "file_name": "a.srt"}]}},
+          {"id": "2", "attributes": {"language": "en", "download_count": 500, "release": "Breaking.Bad.S01E01.720p.BluRay",
+            "feature_details": {"title": "Pilot", "parent_title": "Breaking Bad", "year": 2008, "season_number": 1, "episode_number": 1},
+            "files": [{"file_id": 12, "file_name": "b.srt"}]}},
+          {"id": "3", "attributes": {"language": "en", "download_count": 99999, "release": "Breaking.Bad.S02E01.WEB-DL",
+            "feature_details": {"title": "Seven Thirty-Seven", "parent_title": "Breaking Bad", "season_number": 2, "episode_number": 1},
+            "files": [{"file_id": 13, "file_name": "c.srt"}]}}
+        ]}
+        """
+        let parsed = try OpenSubtitlesClient.parseSearch(Data(episodes.utf8))
+        #expect(parsed.map(\.title) == ["Breaking Bad", "Breaking Bad", "Breaking Bad"])
+        #expect(parsed[0].episode == "S01E01" && parsed[0].seasonNumber == 1 && parsed[0].episodeNumber == 1)
+
+        let ranked = OpenSubtitlesClient.rank(parsed, for: SubtitleQuery(title: "breaking bad", season: 1, episode: 1))
+        // The requested episode first (a BluRay rip before a plain one), however popular others are.
+        #expect(ranked.map(\.id) == ["2", "1", "3"])
+        #expect(ranked[0].savedFileName == "Breaking Bad S01E01.en.srt")
+    }
+
+    @Test func filmSearchesKeepRelevanceBetweenTitles() {
+        func result(_ id: String, _ title: String, _ release: String, _ downloads: Int) -> SubtitleSearchResult {
+            SubtitleSearchResult(id: id, fileID: 0, fileName: "", title: title, year: nil, language: "en",
+                                 release: release, downloads: downloads, episode: nil)
+        }
+        let ranked = OpenSubtitlesClient.rank([
+            result("a", "El Camino", "El.Camino.720p", 10),
+            result("b", "Allegiant", "Allegiant.BluRay", 9999),
+            result("c", "El Camino", "El.Camino.WEB-DL", 5),
+        ], for: SubtitleQuery(title: "breaking bad"))
+        #expect(ranked.map(\.id) == ["c", "a", "b"])
+        #expect(result("x", "El Camino: A Breaking Bad Movie", "", 0).savedFileName == "El Camino A Breaking Bad Movie.en.srt")
+    }
+
+    @Test func filmsAreSavedWithTheirYear() {
+        let film = SubtitleSearchResult(id: "x", fileID: 1, fileName: "x.srt", title: "Parasite", year: 2019, language: "ko",
+                                        release: "", downloads: 1, episode: nil)
+        #expect(film.savedFileName == "Parasite (2019).ko.srt")
+    }
+
     @Test func detectsASubtitleFilesLanguage() {
         let cues = ["밤새 어디 있었어?", "역에서 두 시간 동안 너를 기다렸어.", "걱정 마, 형이 집까지 데려다줄 거야."]
             .enumerated().map { SubtitleCue(start: Double($0.offset), end: Double($0.offset) + 1, text: $0.element) }

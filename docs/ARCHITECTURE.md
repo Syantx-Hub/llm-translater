@@ -683,7 +683,14 @@ subtitle file, then shows the file's lines, translated, on the file's own timing
   translation isn't ready yet aren't shown in the original language.
 - **Finding subtitles** (`OpenSubtitlesClient`). Search and download through the
   OpenSubtitles REST API with the key from `.env` (`Secrets`); a free account login
-  raises the daily download limit. Downloads are saved under
+  raises the daily download limit. The API redirects (301) unless query parameters are
+  sorted by name, values lowercased and spaces sent as `+`, so URLs are built that way.
+  TV episodes (a "TV episode" toggle, or "breaking bad s01e01", "1x01", "season 1 episode 1"
+  typed in the title) first look up the show (`/features?type=tvshow`) and then search
+  by `parent_feature_id` + `season_number` + `episode_number`, so a film with the same
+  words (El Camino) can't crowd the results. The requested episode comes first; within a
+  title, WEB-DL/BluRay rips and then download counts decide the order. Files are saved as
+  "Breaking Bad S01E01.en.srt" or "Parasite (2019).ko.srt". Downloads are saved under
   `~/Library/Application Support/Subtitler/Subtitles`.
 
 The subtitles must be in the spoken language for text matching (e.g. Korean subtitles for

@@ -5,6 +5,10 @@ import SwiftUI
 final class SubtitleSearch: ObservableObject {
     @Published var query = ""
     @Published var language = "en"
+    /// Search one episode of a show instead of films.
+    @Published var isEpisode = false
+    @Published var season = ""
+    @Published var episode = ""
     @Published private(set) var results: [SubtitleSearchResult] = []
     @Published private(set) var isSearching = false
     @Published private(set) var downloading: String?
@@ -14,8 +18,19 @@ final class SubtitleSearch: ObservableObject {
     var hasAPIKey: Bool { Secrets.openSubtitlesAPIKey != nil }
 
     func search() {
-        let query = query.trimmingCharacters(in: .whitespaces)
-        guard !query.isEmpty, let client = OpenSubtitlesClient.fromSecrets() else {
+        var request = SubtitleQuery.parse(query, season: isEpisode ? season : "", episode: isEpisode ? episode : "")
+        // "breaking bad s01e01" typed in the title: switch to episode search and show it.
+        if request.isEpisode {
+            isEpisode = true
+            season = String(request.season!)
+            episode = String(request.episode!)
+            query = request.title
+        } else if isEpisode {
+            error = "Enter both a season and an episode number, or switch off TV episode."
+            return
+        }
+        request.title = request.title.trimmingCharacters(in: .whitespaces)
+        guard !request.title.isEmpty, let client = OpenSubtitlesClient.fromSecrets() else {
             error = OpenSubtitlesError.missingAPIKey.localizedDescription
             return
         }
@@ -24,8 +39,12 @@ final class SubtitleSearch: ObservableObject {
         message = nil
         Task {
             do {
-                results = try await client.search(query, languages: [language])
-                if results.isEmpty { message = "No subtitles found. Try the original title, or another language." }
+                results = try await client.search(request, languages: [language])
+                if results.isEmpty {
+                    message = request.isEpisode
+                        ? "No subtitles for that episode. Check the show's title and the numbers, or try another language."
+                        : "No subtitles found. Try the original title, or another language."
+                }
             } catch {
                 self.error = error.localizedDescription
             }
@@ -40,7 +59,7 @@ final class SubtitleSearch: ObservableObject {
         Task {
             do {
                 let text = try await client.download(result)
-                let url = try state.loadDownloadedSubtitles(text, named: result.fileName)
+                let url = try state.loadDownloadedSubtitles(text, named: result.savedFileName)
                 state.mode = .synced
                 message = "Loaded \(url.lastPathComponent). Play the video and press Start."
             } catch {
@@ -71,7 +90,7 @@ struct SubtitleSearchView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             HStack {
-                TextField("Film or show title", text: $search.query)
+                TextField("Film or show title — or \"breaking bad s01e01\"", text: $search.query)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit { search.search() }
                 Picker("", selection: $search.language) {
@@ -83,7 +102,21 @@ struct SubtitleSearchView: View {
                     .keyboardShortcut(.defaultAction)
                     .disabled(search.isSearching || search.query.isEmpty)
             }
-            if search.isSearching { ProgressView().controlSize(.small) }
+            HStack(spacing: 10) {
+                Toggle("TV episode", isOn: $search.isEpisode)
+                if search.isEpisode {
+                    TextField("Season", text: $search.season)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 70)
+                        .onSubmit { search.search() }
+                    TextField("Episode", text: $search.episode)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 70)
+                        .onSubmit { search.search() }
+                }
+                Spacer()
+                if search.isSearching { ProgressView().controlSize(.small) }
+            }
             List(search.results) { result in
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 2) {
