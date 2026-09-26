@@ -4,6 +4,8 @@ import SwiftUI
 @main
 enum Entry {
     static func main() {
+        // Writing to a crashed translation sidecar's stdin must return an error, not kill us.
+        signal(SIGPIPE, SIG_IGN)
         if let index = CommandLine.arguments.firstIndex(of: "--snapshot"), index + 1 < CommandLine.arguments.count {
             MainActor.assumeIsolated { Snapshotter.run(into: CommandLine.arguments[index + 1]) }
             exit(0)
@@ -74,10 +76,24 @@ struct SubtitlerApp: App {
 final class WindowRouter {
     static let shared = WindowRouter()
     var openWindow: OpenWindowAction?
+    private var openedAtLaunch = false
 
     func show(_ id: String) {
-        openWindow?(id: id)
+        if let openWindow {
+            openWindow(id: id)
+        } else if let window = NSApp.windows.first(where: { $0.identifier?.rawValue.contains(id) == true && !($0 is NSPanel) }) {
+            // Before the label registered: bring back a window SwiftUI already created.
+            window.makeKeyAndOrderFront(nil)
+        }
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// The label's task can run again if SwiftUI rebuilds the status item; only the first
+    /// run opens a window.
+    func showAtLaunch(_ id: String) {
+        guard !openedAtLaunch else { return }
+        openedAtLaunch = true
+        show(id)
     }
 }
 
@@ -86,7 +102,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// icon alone is easy to miss, especially behind the notch.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
         MainActor.assumeIsolated { WindowRouter.shared.show("main") }
-        return true
+        return false // handled; don't let AppKit also reopen windows
     }
 }
 
@@ -97,9 +113,10 @@ private struct MenuBarIcon: View {
 
     var body: some View {
         Image(systemName: running ? "captions.bubble.fill" : "captions.bubble")
+            .accessibilityLabel(running ? "Subtitler, live" : needsSetup ? "Subtitler, needs setup" : "Subtitler")
             .task {
                 WindowRouter.shared.openWindow = openWindow
-                WindowRouter.shared.show(needsSetup ? "welcome" : "main")
+                WindowRouter.shared.showAtLaunch(needsSetup ? "welcome" : "main")
             }
     }
 }

@@ -55,6 +55,8 @@ final class SpeechSegmenter {
     private var silenceFrames = 0
     private var samplesSincePartial = 0
     private var noiseFloor: Float = 1e-4
+    /// Recent frame energies (~3 s), to notice background sound that never goes quiet.
+    private var recentEnergies: [Float] = []
 
     func append(_ samples: [Float]) {
         pending += samples
@@ -73,14 +75,24 @@ final class SpeechSegmenter {
 
     private func process(_ frame: [Float]) {
         let energy = frame.reduce(0) { $0 + $1 * $1 } / Float(frame.count)
+        recentEnergies.append(energy)
+        if recentEnergies.count > 100 { recentEnergies.removeFirst() }
+        if inSpeech, recentEnergies.count == 100, let quietest = recentEnergies.min(), quietest > noiseFloor * 6 {
+            // Speech has gaps between words; sound that stayed loud for 3 s straight is a
+            // music bed or ambience. Let the floor rise to it so the utterance can end.
+            noiseFloor = noiseFloor * 0.9 + quietest * 0.1
+        }
         let isSpeech = energy > max(noiseFloor * 6, 2e-5)
 
         if !inSpeech {
             // Track the background level slowly, so steady music raises the threshold.
             noiseFloor = noiseFloor * 0.98 + energy * 0.02
-            preRoll.append(frame)
-            if preRoll.count > preRollFrames { preRoll.removeFirst() }
-            guard isSpeech else { return }
+            guard isSpeech else {
+                preRoll.append(frame)
+                if preRoll.count > preRollFrames { preRoll.removeFirst() }
+                return
+            }
+            // The onset frame itself is appended below, after the pre-roll.
             inSpeech = true
             utterance = preRoll.flatMap { $0 }
             frameEnergies = preRoll.map { $0.reduce(0) { $0 + $1 * $1 } / Float($0.count) }

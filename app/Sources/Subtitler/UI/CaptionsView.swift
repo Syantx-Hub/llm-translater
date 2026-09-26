@@ -12,7 +12,7 @@ struct CaptionsView: View {
             VStack(alignment: .leading, spacing: 12) {
                 preview
                 Toggle("Preview on screen", isOn: $state.previewOnScreen)
-                    .disabled(state.isRunning)
+                    .disabled(state.isRunning || state.isBusy)
                 Text(state.isRunning
                      ? "Subtitles are live — changes apply to them right away."
                      : "Shows sample captions over your screen so you can fine-tune position and size.")
@@ -37,14 +37,14 @@ struct CaptionsView: View {
                     }
                     labeledSlider("Size", value: $style.fontSize, in: 18...72, format: "%.0f pt")
                     labeledSlider("Line spacing", value: $style.lineSpacing, in: 0...0.8, format: "%.2f")
-                    ColorPicker("Color", selection: $style.textColor, supportsOpacity: false)
+                    ColorPicker("Text color", selection: $style.textColor, supportsOpacity: false)
                     Picker("Edge", selection: $style.edge) {
                         ForEach(CaptionStyle.Edge.allCases) { Text($0.label).tag($0) }
                     }
                     .pickerStyle(.segmented)
                 }
                 Section("Background") {
-                    ColorPicker("Color", selection: $style.backgroundColor, supportsOpacity: false)
+                    ColorPicker("Background color", selection: $style.backgroundColor, supportsOpacity: false)
                     labeledSlider("Opacity", value: $style.backgroundOpacity, in: 0...1, format: "%.0f%%", scale: 100)
                     labeledSlider("Corner radius", value: $style.cornerRadius, in: 0...24, format: "%.0f")
                 }
@@ -75,7 +75,7 @@ struct CaptionsView: View {
 
     /// A 16:9 "video frame" at screen proportions, captioned exactly like the overlay.
     private var preview: some View {
-        let screen = NSScreen.main?.frame.size ?? CGSize(width: 1440, height: 900)
+        let screen = OverlayController.targetScreen?.frame.size ?? CGSize(width: 1440, height: 900)
         let height = previewWidth * screen.height / screen.width
         return ZStack {
             LinearGradient(

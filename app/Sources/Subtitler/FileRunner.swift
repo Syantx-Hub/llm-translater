@@ -2,7 +2,7 @@ import AVFoundation
 import Foundation
 
 /// Headless mode: runs an audio file through the same segmenter → ASR → translation
-/// pipeline as live capture and prints the subtitles. Needs no Screen Recording permission.
+/// pipeline as live capture and prints the subtitles. Needs no audio-capture permission.
 ///
 ///   Subtitler --file clip.m4a [--source en] [--target my] [--model SPEECH_ID] [--translator ID|sidecar:nllb|off]
 ///            [--responsiveness fast|balanced|accurate] [--realtime]

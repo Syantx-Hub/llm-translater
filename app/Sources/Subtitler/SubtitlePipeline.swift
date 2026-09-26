@@ -25,11 +25,13 @@ actor SubtitlePipeline {
         let endedAt: Date
     }
 
-    private let transcriber: Transcriber
+    private let transcriber: any SpeechTranscribing
     private let translator: Translator
-    private let target: String
+    /// nil when only transcribing.
+    private let target: String?
     private let translateDrafts: Bool
-    private let emit: @Sendable (Update) -> Void
+    private let emitUpdate: @Sendable (Update) -> Void
+    private var cancelled = false
 
     /// nil until auto-detection settles on the language of the first line.
     private var source: String?
@@ -45,18 +47,38 @@ actor SubtitlePipeline {
     private var lastDraft: (count: Int, text: String)?
     private var pendingDraftText: String?
     private var draftTranslation: (text: String, task: Task<String?, Never>)?
+    /// The latest finished draft translation of the current utterance.
+    private var translatedDraft: (text: String, translation: String)?
 
-    init(transcriber: Transcriber, translator: Translator, source: String?, target: String,
+    init(transcriber: any SpeechTranscribing, translator: Translator, source: String?, target: String?,
          translateDrafts: Bool = true, emit: @escaping @Sendable (Update) -> Void) {
         self.transcriber = transcriber
         self.translator = translator
         self.source = source
         self.target = target
         self.translateDrafts = translateDrafts
-        self.emit = emit
+        self.emitUpdate = emit
+    }
+
+    /// Stops all work: queued segments are dropped, in-flight translations cancelled, and
+    /// nothing more is emitted. Call when the session ends.
+    func cancel() {
+        cancelled = true
+        finals.removeAll()
+        latestDraft = nil
+        pendingDraftText = nil
+        draftTranslation?.task.cancel()
+        draftTranslation = nil
+        translationChain?.cancel()
+    }
+
+    private func emit(_ update: Update) {
+        guard !cancelled else { return }
+        emitUpdate(update)
     }
 
     func submit(_ event: SpeechSegmenter.Event) {
+        guard !cancelled else { return }
         switch event {
         case .final(let samples, let trailingSilence):
             finals.append(Final(samples: samples, trailingSilence: trailingSilence, endedAt: Date()))
@@ -79,21 +101,21 @@ actor SubtitlePipeline {
     }
 
     private func drain() async {
-        while true {
+        while !cancelled {
             if !finals.isEmpty {
                 await finalize(finals.removeFirst())
             } else if let samples = latestDraft {
                 latestDraft = nil
                 await draft(samples)
             } else {
-                draining = false
-                return
+                break
             }
         }
+        draining = false
     }
 
     private var sourceNeedsTranslation: Bool {
-        guard let from = source else { return false }
+        guard let from = source, let target else { return false }
         return from != target && Languages.isSupported(from)
     }
 
@@ -109,8 +131,8 @@ actor SubtitlePipeline {
         let generation = utterance
         guard let result = try? await transcriber.transcribe(samples, language: source) else { return }
         // A final that arrived while decoding supersedes this draft.
-        guard finals.isEmpty, generation == utterance else { return }
-        detect(result.language)
+        guard finals.isEmpty, generation == utterance, !cancelled else { return }
+        // Language is only locked from finals: a half-second draft is too short to trust.
         lastDraft = (samples.count, result.text)
         guard translateDrafts, sourceNeedsTranslation else {
             emit(.draft(DraftCaption(text: result.text, isTranslation: false)))
@@ -124,10 +146,10 @@ actor SubtitlePipeline {
 
     /// At most one draft translation runs; a newer draft replaces the queued one.
     private func startDraftTranslation() {
-        guard draftTranslation == nil, let text = pendingDraftText, let from = source else { return }
+        guard draftTranslation == nil, let text = pendingDraftText, let from = source, let target else { return }
         pendingDraftText = nil
         let generation = utterance
-        let task = Task { [translator, target, context] in
+        let task = Task { [translator, context] in
             try? await Self.translate(text, from: from, to: target, context: context, with: translator)
         }
         draftTranslation = (text, task)
@@ -139,7 +161,9 @@ actor SubtitlePipeline {
 
     private func finishDraftTranslation(_ translation: String?, generation: Int) {
         guard generation == utterance else { return }
+        let text = draftTranslation?.text
         draftTranslation = nil
+        if let translation, let text { translatedDraft = (text, translation) }
         if let translation, finals.isEmpty {
             emit(.draft(DraftCaption(text: translation, isTranslation: true)))
         }
@@ -155,13 +179,15 @@ actor SubtitlePipeline {
             return unheard >= 0 && unheard <= final.trailingSilence ? draft.text : nil
         }
         let inFlight = draftTranslation
+        let finished = translatedDraft
         utterance += 1
         lastDraft = nil
         pendingDraftText = nil
         draftTranslation = nil
+        translatedDraft = nil
 
         let text: String
-        if let reusableText {
+        if let reusableText, source != nil {
             text = reusableText
         } else {
             do {
@@ -183,25 +209,33 @@ actor SubtitlePipeline {
         if context.count > 4 { context.removeFirst() }
         let translate = sourceNeedsTranslation
         let draftTask = inFlight?.text == text ? inFlight?.task : nil
+        let finishedTranslation = finished?.text == text ? finished?.translation : nil
 
         let previous = translationChain
-        translationChain = Task { [translator, target, emit] in
+        translationChain = Task { [translator, target] in
             await previous?.value
+            guard !Task.isCancelled else { return }
             let latency = { Date().timeIntervalSince(final.endedAt) }
-            guard translate else {
-                emit(.line(original: text, translation: text, latency: latency()))
+            // `translate` is false when only transcribing (no target) or the pair is unsupported.
+            guard translate, let target else {
+                self.emit(.line(original: text, translation: text, latency: latency()))
+                return
+            }
+            if let finishedTranslation {
+                self.emit(.line(original: text, translation: finishedTranslation, latency: latency()))
                 return
             }
             if let draftTask, let translation = await draftTask.value {
-                emit(.line(original: text, translation: translation, latency: latency()))
+                self.emit(.line(original: text, translation: translation, latency: latency()))
                 return
             }
             do {
                 let translation = try await Self.translate(text, from: from, to: target, context: lineContext, with: translator)
-                emit(.line(original: text, translation: translation, latency: latency()))
+                self.emit(.line(original: text, translation: translation, latency: latency()))
             } catch {
-                emit(.error(error.localizedDescription))
-                emit(.line(original: text, translation: text, latency: latency()))
+                guard !Task.isCancelled else { return }
+                self.emit(.error(error.localizedDescription))
+                self.emit(.line(original: text, translation: text, latency: latency()))
             }
         }
     }
@@ -232,8 +266,9 @@ actor SubtitlePipeline {
             let next = index + 1 < characters.count ? characters[index + 1] : " "
             if unspaced.contains(character) || (spaced.contains(character) && next.isWhitespace) {
                 let trimmed = current.trimmingCharacters(in: .whitespaces)
-                // Very short pieces ("Mr.", "Dr.") join the following sentence.
-                if trimmed.count >= 4 {
+                // Very short Latin pieces ("Mr.", "Dr.") join the following sentence;
+                // CJK and Burmese sentences can be that short on their own.
+                if unspaced.contains(character) || trimmed.count >= 4 {
                     sentences.append(trimmed)
                     current = ""
                 }

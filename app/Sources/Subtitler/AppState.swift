@@ -74,7 +74,14 @@ final class AppState: ObservableObject {
 
     /// The language captions are written in: the target, or the spoken language when only transcribing.
     var captionLanguage: String {
-        mode == .translate ? targetLanguage : (detectedLanguage ?? (sourceLanguage == Languages.auto ? "en" : sourceLanguage))
+        if isRunning {
+            return sessionCaptionLanguage ?? spokenLanguage
+        }
+        return mode == .translate ? targetLanguage : spokenLanguage
+    }
+
+    private var spokenLanguage: String {
+        detectedLanguage ?? (sourceLanguage == Languages.auto ? "en" : sourceLanguage)
     }
 
     var isRunning: Bool { phase == .running }
@@ -85,9 +92,12 @@ final class AppState: ObservableObject {
     private let defaults = UserDefaults.standard
     private let transcriber = Transcriber()
     private var loadedModel: String?
-    private var capture: AudioCapture?
-    private var translator: Translator?
-    private var eventPump: Task<Void, Never>?
+    /// Bumped on every start, stop and failure; work from an older session is ignored.
+    private var session = 0
+    private var runTask: Task<Void, Never>?
+    private var resources = Resources()
+    /// The caption language the running session was started with.
+    private var sessionCaptionLanguage: String?
     private var hideTask: Task<Void, Never>?
     private lazy var overlay = OverlayController(state: self, style: style)
 
@@ -98,54 +108,83 @@ final class AppState: ObservableObject {
         targetLanguage = defaults.string(forKey: "targetLanguage") ?? "my"
         // Older builds expressed transcribe-only as the "off" translation selection.
         mode = defaults.string(forKey: "mode").flatMap(CaptionMode.init)
-            ?? (models.selectedTranslation == ModelStore.translationOff ? .transcribe : .translate)
+            ?? (models.legacyTranscribeOnly ? .transcribe : .translate)
         responsiveness = defaults.string(forKey: "responsiveness").flatMap(Responsiveness.init) ?? .balanced
         translateDrafts = defaults.object(forKey: "translateDrafts") as? Bool ?? true
     }
 
+    /// Starts a session. The phase flips to loading immediately, so a double click can't
+    /// start two sessions.
     func start() {
         guard phase == .idle || isFailed else { return }
-        Task { await run() }
+        session += 1
+        let id = session
+        phase = .loading("Preparing…")
+        runTask = Task { await run(id) }
     }
 
+    /// Stops the running session, or cancels one that is still loading.
     func stop() {
-        Task { await teardown() }
+        session += 1
+        runTask?.cancel()
+        runTask = nil
         phase = .idle
+        endSession()
     }
 
     private var isFailed: Bool { if case .failed = phase { true } else { false } }
 
-    private func run() async {
+    /// Everything a live session owns, released together.
+    private struct Resources {
+        var pipeline: SubtitlePipeline?
+        var capture: AudioCapture?
+        var translator: Translator?
+        var eventPump: Task<Void, Never>?
+    }
+
+    private func run(_ id: Int) async {
         previewOnScreen = false
         lastError = nil
         detectedLanguage = nil
         latency = nil
+        // Snapshot the settings this session runs with; the pickers are disabled meanwhile.
+        let sessionMode = mode
+        let sessionTarget = targetLanguage
+        var owned = Resources()
         do {
-            try await loadSpeechModel()
+            let speech = try await loadSpeechModel()
+            try checkSession(id)
+            models.inUse = [speech.id]
 
             let translator: Translator
-            if mode == .translate {
+            if sessionMode == .translate {
                 phase = .loading("Starting translator (loading the model can take a minute)…")
                 translator = await startTranslator()
+                if let selection = ModelCatalog.model(id: models.selectedTranslation), !(translator is PassthroughTranslator) {
+                    models.inUse.insert(selection.id)
+                }
             } else {
                 translator = PassthroughTranslator()
             }
-            self.translator = translator
+            owned.translator = translator
+            try checkSession(id)
 
             phase = .loading("Starting audio capture…")
             let pipeline = SubtitlePipeline(
                 transcriber: transcriber, translator: translator,
                 source: sourceLanguage == Languages.auto ? nil : sourceLanguage,
-                // Transcribe-only uses the passthrough translator, so the target is unused.
-                target: mode == .translate ? targetLanguage : "",
-                translateDrafts: mode == .translate && translateDrafts,
-                emit: { [weak self] update in DispatchQueue.main.async { self?.apply(update) } })
+                target: sessionMode == .translate ? sessionTarget : nil,
+                translateDrafts: sessionMode == .translate && translateDrafts,
+                emit: { [weak self] update in
+                    DispatchQueue.main.async { self?.apply(update, session: id) }
+                })
+            owned.pipeline = pipeline
 
             // One ordered stream from the capture queue to the pipeline actor.
             let (events, sink) = AsyncStream<SpeechSegmenter.Event>.makeStream()
             let segmenter = SpeechSegmenter(tuning: responsiveness.tuning)
             segmenter.onEvent = { sink.yield($0) }
-            eventPump = Task {
+            owned.eventPump = Task {
                 for await event in events { await pipeline.submit(event) }
             }
 
@@ -153,27 +192,39 @@ final class AppState: ObservableObject {
             capture.onSamples = { segmenter.append($0) }
             capture.onStop = { [weak self] error in
                 DispatchQueue.main.async {
+                    guard self?.session == id else { return }
                     self?.fail(error?.localizedDescription ?? "Audio capture stopped.")
                 }
             }
+            owned.capture = capture
             try await capture.start()
-            self.capture = capture
+            try checkSession(id)
 
+            resources = owned
+            sessionCaptionLanguage = sessionMode == .translate ? sessionTarget : nil
             phase = .running
             overlay.show()
         } catch {
-            await teardown()
-            fail(error.localizedDescription)
+            await release(owned)
+            guard session == id else { return } // stopped or superseded: nothing to report
+            models.inUse = []
+            phase = .failed(error.localizedDescription)
         }
     }
 
-    private func loadSpeechModel() async throws {
+    private func checkSession(_ id: Int) throws {
+        if session != id || Task.isCancelled { throw CancellationError() }
+    }
+
+    private func loadSpeechModel() async throws -> ModelInfo {
         guard let model = models.speechModel else { throw SetupError.noSpeechModel }
-        guard loadedModel != model.id else { return }
+        if loadedModel == model.id, await transcriber.isLoaded { return model }
+        loadedModel = nil // a failed load must not look like the old model is still loaded
         phase = .loading("Loading \(model.name) (the first run on this Mac can take a few minutes)…")
         try await transcriber.load(model: model.id, folder: ModelFiles.localURL(for: model))
         await transcriber.warmUp()
         loadedModel = model.id
+        return model
     }
 
     /// Falls back to showing the original text, so subtitles still work without a translator.
@@ -193,27 +244,38 @@ final class AppState: ObservableObject {
         }
     }
 
-    private func teardown() async {
-        eventPump?.cancel()
-        eventPump = nil
-        await capture?.stop()
-        capture = nil
-        await translator?.stop()
-        translator = nil
+    /// Ends the current session's UI state and releases its resources in the background.
+    /// Fields are cleared before any await, so a new session started meanwhile is untouched.
+    private func endSession() {
+        let owned = resources
+        resources = Resources()
+        sessionCaptionLanguage = nil
+        models.inUse = []
         hideTask?.cancel()
         lines = []
         draft = nil
         if !previewOnScreen { overlay.hide() }
+        Task { await release(owned) }
+    }
+
+    private func release(_ owned: Resources) async {
+        await owned.pipeline?.cancel()
+        owned.eventPump?.cancel()
+        await owned.capture?.stop()
+        await owned.translator?.stop()
     }
 
     private func fail(_ message: String) {
         guard phase != .idle else { return }
-        Task { await teardown() }
+        session += 1
+        runTask?.cancel()
+        runTask = nil
         phase = .failed(message)
+        endSession()
     }
 
-    private func apply(_ update: SubtitlePipeline.Update) {
-        guard isRunning else { return }
+    private func apply(_ update: SubtitlePipeline.Update, session id: Int) {
+        guard isRunning, id == session else { return }
         switch update {
         case .draft(let caption):
             draft = caption
@@ -246,24 +308,17 @@ final class AppState: ObservableObject {
 }
 
 extension AppState {
-    /// Sample captions in the caption language, for previews and `--snapshot`.
+    /// Sample captions in the caption language, for previews and `--snapshot`: three
+    /// finished lines (so "Lines on screen" is visible) and a fourth as the draft.
     var sampleLines: [SubtitleLine] {
-        let original = "I was waiting for you at the station."
-        let translations = [
-            "my": "ဘူတာမှာ မင်းကို စောင့်နေခဲ့တာ။",
-            "ko": "역에서 너를 기다리고 있었어.",
-            "ja": "駅で君を待っていたんだ。",
-            "zh": "我一直在车站等你。",
-            "th": "ฉันรอเธออยู่ที่สถานี",
-        ]
-        let translation = mode == .translate ? translations[targetLanguage] ?? original : original
-        return [SubtitleLine(original: original, translation: translation)]
+        Array(SampleCaptions.lines(language: captionLanguage, translating: mode == .translate).dropLast())
     }
 
     var sampleDraft: DraftCaption {
-        mode == .translate && targetLanguage == "my"
-            ? DraftCaption(text: "စိတ်မပူပါနဲ့၊ အစ်ကိုက အိမ်ကို လိုက်ပို့ပေးမယ်။", isTranslation: true)
-            : DraftCaption(text: "Don't worry, my brother will drive us home.", isTranslation: false)
+        let last = SampleCaptions.lines(language: captionLanguage, translating: mode == .translate).last!
+        return mode == .translate && translateDrafts
+            ? DraftCaption(text: last.translation, isTranslation: true)
+            : DraftCaption(text: last.original, isTranslation: false)
     }
 
     func previewLines() {

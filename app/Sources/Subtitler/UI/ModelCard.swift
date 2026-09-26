@@ -7,6 +7,8 @@ struct ModelCard: View {
     var compact = false
 
     private var status: ModelStore.Status { store.status(of: model) }
+    /// Loaded by a live or starting session.
+    private var locked: Bool { store.inUse.contains(model.id) }
     private var selected: Bool { store.isSelected(model) && store.isInstalled(model) }
     private var recommended: Bool {
         model.id == (model.kind == .speech ? ModelCatalog.recommendedSpeech : ModelCatalog.recommendedTranslation)
@@ -73,6 +75,7 @@ struct ModelCard: View {
         case .notInstalled:
             Button("Download") { store.download(model) }
                 .buttonStyle(.borderedProminent)
+                .accessibilityLabel("Download \(model.name), \(model.sizeLabel)")
         case .downloading(let fraction):
             VStack(alignment: .trailing, spacing: 6) {
                 ProgressView(value: fraction)
@@ -91,10 +94,19 @@ struct ModelCard: View {
                         .font(.callout.weight(.medium))
                 } else {
                     Button("Use") { store.select(model) }
+                        .disabled(!store.inUse.isEmpty)
+                        .help(store.inUse.isEmpty ? "" : "Stop subtitles to switch models.")
                 }
-                Button("Delete", role: .destructive) { store.delete(model) }
-                    .buttonStyle(.link)
-                    .font(.caption)
+                if locked {
+                    Text("Stop subtitles to delete")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Button("Delete", role: .destructive) { store.delete(model) }
+                        .buttonStyle(.link)
+                        .font(.caption)
+                        .accessibilityLabel("Delete \(model.name)")
+                }
             }
         case .failed(let message):
             VStack(alignment: .trailing, spacing: 6) {

@@ -11,20 +11,35 @@ final class ModelStore: ObservableObject {
         case failed(String)
     }
 
-    /// Translation choices that are not downloadable models.
+    /// Legacy translation selection from builds before transcribe-only was a mode.
     nonisolated static let translationOff = "off"
     nonisolated static let sidecarPrefix = "sidecar:"
 
     @Published private(set) var status: [String: Status] = [:]
     @Published var selectedSpeech: String? { didSet { defaults.set(selectedSpeech, forKey: "selectedSpeech") } }
     @Published var selectedTranslation: String { didSet { defaults.set(selectedTranslation, forKey: "selectedTranslation") } }
+    /// Models a live (or starting) session has loaded. They can't be deleted or swapped.
+    @Published var inUse: Set<String> = []
+    /// Disk space used by installed models, recomputed on refresh rather than per render.
+    @Published private(set) var installedBytes: Int64 = 0
 
-    private let defaults = UserDefaults.standard
-    private var downloads: [String: Task<Void, Never>] = [:]
+    /// True when an older build stored "don't translate" as the translation selection.
+    let legacyTranscribeOnly: Bool
 
-    init() {
+    private let defaults: UserDefaults
+    private var downloads: [String: (attempt: UUID, task: Task<Void, Never>)] = [:]
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        let stored = defaults.string(forKey: "selectedTranslation")
+        legacyTranscribeOnly = stored == Self.translationOff
         selectedSpeech = defaults.string(forKey: "selectedSpeech")
-        selectedTranslation = defaults.string(forKey: "selectedTranslation") ?? ModelCatalog.defaultTranslation
+        selectedTranslation = stored ?? ModelCatalog.defaultTranslation
+        // Transcribe-only is a mode now; a sidecar selection only makes sense in dev builds.
+        if legacyTranscribeOnly || (selectedTranslation.hasPrefix(Self.sidecarPrefix) && !sidecarAvailable) {
+            selectedTranslation = ModelCatalog.defaultTranslation
+        }
+        ModelFiles.removeAbandonedDownloads()
         refresh()
     }
 
@@ -46,6 +61,8 @@ final class ModelStore: ObservableObject {
 
     func isInstalled(_ model: ModelInfo) -> Bool { status(of: model) == .installed }
 
+    func isDownloading(_ model: ModelInfo) -> Bool { downloads[model.id] != nil }
+
     func isSelected(_ model: ModelInfo) -> Bool {
         model.kind == .speech ? selectedSpeech == model.id : selectedTranslation == model.id
     }
@@ -54,11 +71,21 @@ final class ModelStore: ObservableObject {
         for model in ModelCatalog.all where downloads[model.id] == nil {
             status[model.id] = ModelFiles.isInstalled(model) ? .installed : .notInstalled
         }
-        // Keep a usable selection when the chosen model is missing but another is installed.
-        if speechModel == nil {
+        installedBytes = ModelCatalog.all.filter(isInstalled).reduce(0) { total, model in
+            total + Self.size(of: ModelFiles.localURL(for: model))
+        }
+        reselectIfNeeded()
+    }
+
+    /// Keeps a usable selection when the chosen model is missing but another is installed.
+    /// A selection that is being (re)downloaded is left alone.
+    private func reselectIfNeeded() {
+        let speechPending = selectedSpeech.flatMap(ModelCatalog.model(id:)).map(isDownloading) ?? false
+        if speechModel == nil, !speechPending {
             selectedSpeech = preferredInstalled(ModelCatalog.speech, recommended: ModelCatalog.recommendedSpeech)?.id
         }
-        if translationModel == nil, ModelCatalog.model(id: selectedTranslation) != nil,
+        let translationPending = ModelCatalog.model(id: selectedTranslation).map(isDownloading) ?? false
+        if translationModel == nil, !translationPending, ModelCatalog.model(id: selectedTranslation) != nil,
            let installed = preferredInstalled(ModelCatalog.translation, recommended: ModelCatalog.recommendedTranslation) {
             selectedTranslation = installed.id
         }
@@ -70,61 +97,63 @@ final class ModelStore: ObservableObject {
     }
 
     func download(_ model: ModelInfo) {
-        guard downloads[model.id] == nil else { return }
+        guard downloads[model.id] == nil, !inUse.contains(model.id) else { return }
+        let attempt = UUID()
         status[model.id] = .downloading(0)
-        downloads[model.id] = Task { [weak self] in
+        let task = Task { [weak self] in
             do {
                 _ = try await ModelFiles.download(model) { fraction in
-                    Task { @MainActor in
-                        guard case .downloading = self?.status[model.id] else { return }
-                        self?.status[model.id] = .downloading(fraction)
-                    }
+                    Task { @MainActor in self?.updateProgress(model, attempt: attempt, fraction: fraction) }
                 }
-                self?.finishDownload(model, .installed)
+                self?.finishDownload(model, attempt: attempt, .installed)
             } catch is CancellationError {
-                self?.finishDownload(model, .notInstalled)
+                self?.finishDownload(model, attempt: attempt, .notInstalled)
             } catch let error as URLError where error.code == .cancelled {
-                self?.finishDownload(model, .notInstalled)
+                self?.finishDownload(model, attempt: attempt, .notInstalled)
             } catch {
-                self?.finishDownload(model, .failed(error.localizedDescription))
+                self?.finishDownload(model, attempt: attempt, .failed(error.localizedDescription))
             }
         }
+        downloads[model.id] = (attempt, task)
     }
 
-    private func finishDownload(_ model: ModelInfo, _ result: Status) {
+    /// Ignores progress from a cancelled attempt that arrives after a retry started.
+    private func updateProgress(_ model: ModelInfo, attempt: UUID, fraction: Double) {
+        guard downloads[model.id]?.attempt == attempt else { return }
+        status[model.id] = .downloading(fraction)
+    }
+
+    private func finishDownload(_ model: ModelInfo, attempt: UUID, _ result: Status) {
+        guard downloads[model.id]?.attempt == attempt else { return }
         downloads[model.id] = nil
         status[model.id] = result
         guard result == .installed else { return }
         // The first model of a kind becomes the one in use.
         if model.kind == .speech, speechModel == nil || selectedSpeech == nil { selectedSpeech = model.id }
-        if model.kind == .translation, translationModel == nil, selectedTranslation != Self.translationOff,
-           !selectedTranslation.hasPrefix(Self.sidecarPrefix) {
+        if model.kind == .translation, translationModel == nil, !selectedTranslation.hasPrefix(Self.sidecarPrefix) {
             selectedTranslation = model.id
         }
+        refresh()
     }
 
     func cancelDownload(_ model: ModelInfo) {
-        downloads[model.id]?.cancel()
+        downloads[model.id]?.task.cancel()
     }
 
     func select(_ model: ModelInfo) {
-        guard isInstalled(model) else { return }
+        guard isInstalled(model), inUse.isEmpty else { return }
         if model.kind == .speech { selectedSpeech = model.id } else { selectedTranslation = model.id }
     }
 
     func delete(_ model: ModelInfo) {
+        guard !inUse.contains(model.id), !isDownloading(model) else { return }
         do {
             try ModelFiles.delete(model)
             status[model.id] = .notInstalled
             if selectedSpeech == model.id { selectedSpeech = nil }
+            refresh()
         } catch {
             status[model.id] = .failed(error.localizedDescription)
-        }
-    }
-
-    var installedBytes: Int64 {
-        ModelCatalog.all.filter(isInstalled).reduce(0) { total, model in
-            total + Self.size(of: ModelFiles.localURL(for: model))
         }
     }
 

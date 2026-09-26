@@ -9,7 +9,7 @@ struct ControlPanel: View {
         VStack(alignment: .leading, spacing: 12) {
             header
             Divider()
-            if models.needsSetup {
+            if models.needsSetup && !state.isRunning && !state.isBusy {
                 setupPrompt
             } else {
                 settings
@@ -33,15 +33,23 @@ struct ControlPanel: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Subtitler").font(.headline)
-                Text(status).font(.caption).foregroundStyle(statusColor).lineLimit(2)
+                Label(status, systemImage: statusIcon)
+                    .font(.caption)
+                    .foregroundStyle(statusColor)
+                    .lineLimit(2)
             }
             Spacer()
-            Button(state.isRunning ? "Stop" : "Start") {
-                state.isRunning ? state.stop() : state.start()
+            Button(primaryActionTitle) {
+                state.isRunning || state.isBusy ? state.stop() : state.start()
             }
             .keyboardShortcut(.defaultAction)
-            .disabled(state.isBusy || models.needsSetup)
+            // Stopping and cancelling must always work, even if a model was just removed.
+            .disabled(!state.isRunning && !state.isBusy && models.needsSetup)
         }
+    }
+
+    private var primaryActionTitle: String {
+        state.isRunning ? "Stop" : state.isBusy ? "Cancel" : "Start"
     }
 
     private var setupPrompt: some View {
@@ -54,11 +62,12 @@ struct ControlPanel: View {
 
     private var settings: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Picker("", selection: $state.mode) {
+            Picker("Mode", selection: $state.mode) {
                 ForEach(CaptionMode.allCases) { Text($0.label).tag($0) }
             }
             .pickerStyle(.segmented)
             .labelsHidden()
+            .disabled(state.isRunning || state.isBusy)
 
             Form {
                 Picker("Spoken language", selection: $state.sourceLanguage) {
@@ -128,6 +137,15 @@ struct ControlPanel: View {
         case .loading(let message): message
         case .running: state.latency.map { String(format: "Listening · lag %.1f s", $0) } ?? "Listening to system audio"
         case .failed(let message): message
+        }
+    }
+
+    private var statusIcon: String {
+        switch state.phase {
+        case .idle: "stop.circle"
+        case .loading: "hourglass"
+        case .running: "waveform"
+        case .failed: "exclamationmark.triangle"
         }
     }
 

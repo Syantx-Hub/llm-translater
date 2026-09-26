@@ -74,11 +74,11 @@ final class CaptionStyle: ObservableObject {
     /// Seconds of quiet before captions clear.
     @Published var hideAfter: Double { didSet { save(hideAfter, "hideAfter") } }
 
-    private let defaults = UserDefaults.standard
+    private let defaults: UserDefaults
     private static let prefix = "caption."
 
-    init() {
-        let d = UserDefaults.standard
+    init(defaults d: UserDefaults = .standard) {
+        defaults = d
         func value<T>(_ key: String) -> T? { d.object(forKey: Self.prefix + key) as? T }
         font = value("font").flatMap(FontChoice.init) ?? .automatic
         weight = value("weight").flatMap(Weight.init) ?? .medium
@@ -104,12 +104,14 @@ final class CaptionStyle: ObservableObject {
         for key in defaults.dictionaryRepresentation().keys where key.hasPrefix(Self.prefix) {
             defaults.removeObject(forKey: key)
         }
-        let fresh = CaptionStyle()
-        font = fresh.font; weight = fresh.weight; fontSize = 34; lineSpacing = fresh.lineSpacing
+        defaults.removeObject(forKey: "fontSize")
+        defaults.removeObject(forKey: "showOriginal")
+        let fresh = CaptionStyle(defaults: defaults)
+        font = fresh.font; weight = fresh.weight; fontSize = fresh.fontSize; lineSpacing = fresh.lineSpacing
         textColor = fresh.textColor; edge = fresh.edge; backgroundColor = fresh.backgroundColor
         backgroundOpacity = fresh.backgroundOpacity; cornerRadius = fresh.cornerRadius
         position = fresh.position; offset = fresh.offset; maxWidth = fresh.maxWidth
-        lineCount = fresh.lineCount; showOriginal = true; originalScale = fresh.originalScale
+        lineCount = fresh.lineCount; showOriginal = fresh.showOriginal; originalScale = fresh.originalScale
         showDrafts = fresh.showDrafts; hideAfter = fresh.hideAfter
     }
 

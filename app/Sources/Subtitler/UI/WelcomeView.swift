@@ -183,7 +183,10 @@ struct WelcomeView: View {
                     .disabled(!hasSpeechChoice)
             case .translation:
                 if hasTranslationChoice {
-                    Button("Continue") { move(1) }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+                    Button("Continue") {
+                        state.mode = .translate // undo an earlier "Skip"
+                        move(1)
+                    }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
                 } else {
                     Button("Skip — transcribe only") {
                         state.mode = .transcribe
@@ -208,6 +211,8 @@ struct WelcomeView: View {
                     .frame(width: 6, height: 6)
             }
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Step \(step.rawValue + 1) of \(Step.allCases.count)")
     }
 
     private func stepLayout<Content: View>(title: String, subtitle: String, @ViewBuilder content: () -> Content) -> some View {

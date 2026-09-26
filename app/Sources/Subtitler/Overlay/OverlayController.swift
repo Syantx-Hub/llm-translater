@@ -24,19 +24,24 @@ final class OverlayPanel: NSPanel {
 @MainActor
 final class OverlayController {
     private let panel = OverlayPanel()
-    private var screenObserver: NSObjectProtocol?
+    private var observers: [(NotificationCenter, NSObjectProtocol)] = []
 
     init(state: AppState, style: CaptionStyle) {
         panel.contentView = NSHostingView(rootView: SubtitleOverlayView(state: state, style: style))
-        screenObserver = NotificationCenter.default.addObserver(
-            forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.layout() }
+        // Follow the video: re-pick the screen when displays change, when the user switches
+        // Spaces (e.g. into a full-screen player) and when another app comes forward.
+        let relayout: @Sendable (Notification) -> Void = { [weak self] _ in
+            MainActor.assumeIsolated { self?.layout(onlyIfVisible: true) }
         }
+        observers = [
+            (NotificationCenter.default, NSApplication.didChangeScreenParametersNotification),
+            (NSWorkspace.shared.notificationCenter, NSWorkspace.activeSpaceDidChangeNotification),
+            (NSWorkspace.shared.notificationCenter, NSWorkspace.didActivateApplicationNotification),
+        ].map { center, name in (center, center.addObserver(forName: name, object: nil, queue: .main, using: relayout)) }
     }
 
     func show() {
-        layout()
+        layout(onlyIfVisible: false)
         panel.orderFrontRegardless()
     }
 
@@ -44,10 +49,18 @@ final class OverlayController {
         panel.orderOut(nil)
     }
 
-    /// Covers the whole main screen; CaptionLayer positions the text inside it, so style
-    /// changes (position, width, offset) apply without moving the window.
-    private func layout() {
-        guard let screen = NSScreen.main else { return }
-        panel.setFrame(screen.frame, display: true)
+    /// The screen the person is most likely watching: the one with the pointer.
+    static var targetScreen: NSScreen? {
+        let pointer = NSEvent.mouseLocation
+        return NSScreen.screens.first { NSMouseInRect(pointer, $0.frame, false) } ?? NSScreen.main
+    }
+
+    /// Covers the target screen below the camera housing (notch); CaptionLayer positions
+    /// the text inside it, so style changes apply without moving the window.
+    private func layout(onlyIfVisible: Bool) {
+        guard !onlyIfVisible || panel.isVisible, let screen = Self.targetScreen else { return }
+        var frame = screen.frame
+        frame.size.height -= screen.safeAreaInsets.top
+        if panel.frame != frame { panel.setFrame(frame, display: true) }
     }
 }

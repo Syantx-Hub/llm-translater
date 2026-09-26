@@ -13,6 +13,8 @@ Usage:
     python translate_server.py --engine echo     # no model, for testing the app
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import subprocess

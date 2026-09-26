@@ -1,15 +1,34 @@
 #!/usr/bin/env bash
 # Builds app/build/Subtitler.app from the Swift package (no Xcode project needed).
 #
-#   scripts/build-app.sh            # release build
-#   scripts/build-app.sh debug      # debug build
-#   scripts/build-app.sh release --open
+#   scripts/build-app.sh                  # release build
+#   scripts/build-app.sh debug            # debug build
+#   scripts/build-app.sh release --dev    # also wire up python/ for the developer engines
+#   scripts/build-app.sh release --open   # open the app when done
+#
+# Signing: ad-hoc by default. macOS ties the System Audio Recording grant to the
+# signature, so an ad-hoc build asks again after every rebuild. Set SIGN_IDENTITY to a
+# certificate in your keychain (a self-signed "Code Signing" certificate from Keychain
+# Access works) to keep the grant across rebuilds:
+#   SIGN_IDENTITY="Subtitler Dev" scripts/build-app.sh
 set -euo pipefail
 
 CONFIG="${1:-release}"
+shift || true
+DEV=0
+OPEN=0
+for arg in "$@"; do
+    case "$arg" in
+        --dev) DEV=1 ;;
+        --open) OPEN=1 ;;
+        *) echo "unknown option: $arg" >&2; exit 2 ;;
+    esac
+done
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_DIR="$ROOT/app"
 APP="$APP_DIR/build/Subtitler.app"
+IDENTITY="${SIGN_IDENTITY:--}"
 
 cd "$APP_DIR"
 swift build -c "$CONFIG" --arch arm64
@@ -19,17 +38,26 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
 cp "$BIN_DIR/Subtitler" "$APP/Contents/MacOS/Subtitler"
 # llama.cpp (translation runtime) is a dynamic framework, found via @executable_path/../Frameworks.
+# Apple Silicon only, so drop the x86_64 slice.
 cp -R "$BIN_DIR/llama.framework" "$APP/Contents/Frameworks/"
+LLAMA_BIN="$APP/Contents/Frameworks/llama.framework/Versions/Current/llama"
+if lipo -archs "$LLAMA_BIN" | grep -q x86_64; then
+    lipo -thin arm64 "$LLAMA_BIN" -output "$LLAMA_BIN.arm64" && mv "$LLAMA_BIN.arm64" "$LLAMA_BIN"
+fi
 # SwiftPM resource bundles (e.g. swift-transformers' Hub) are looked up in Contents/Resources.
 find "$BIN_DIR" -maxdepth 1 -name "*.bundle" -exec cp -R {} "$APP/Contents/Resources/" \;
 cp "$APP_DIR/Resources/AppIcon.icns" "$APP/Contents/Resources/"
-sed "s|__REPO_ROOT__|$ROOT|" "$APP_DIR/Resources/Info.plist" > "$APP/Contents/Info.plist"
+cp "$APP_DIR/Resources/Info.plist" "$APP/Contents/Info.plist"
+if [[ $DEV == 1 ]]; then
+    # Development only: lets the app find python/translate_server.py in this checkout.
+    /usr/libexec/PlistBuddy -c "Add :SubtitlerRepoRoot string $ROOT" "$APP/Contents/Info.plist"
+fi
 
-# Ad-hoc signature. macOS ties the Screen Recording grant to the signature, so after a
-# rebuild you may need to re-enable Subtitler in System Settings › Privacy & Security.
-codesign --force --deep --sign - "$APP"
+# Sign inside-out: the framework first, then the app (no --deep).
+codesign --force --sign "$IDENTITY" "$APP/Contents/Frameworks/llama.framework"
+codesign --force --sign "$IDENTITY" "$APP"
 
 echo "Built $APP"
-if [[ "${2:-}" == "--open" ]]; then
+if [[ $OPEN == 1 ]]; then
     open "$APP"
 fi

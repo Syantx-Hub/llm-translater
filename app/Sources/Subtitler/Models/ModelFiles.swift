@@ -4,17 +4,23 @@ import WhisperKit
 enum ModelFilesError: LocalizedError, Equatable {
     case incomplete(String)
     case busy(String)
+    case badResponse(Int)
 
     var errorDescription: String? {
         switch self {
         case .incomplete(let name): "\(name) did not download completely. Try again."
-        case .busy(let name): "\(name) is already being downloaded by another Subtitler window or process."
+        case .busy(let name): "\(name) is being downloaded or removed by another Subtitler window or process."
+        case .badResponse(let code): "The download server answered with HTTP \(code)."
         }
     }
 }
 
 /// Where downloaded models live on disk, and how to fetch and remove them.
 /// Not tied to the UI, so the headless `--file` mode and tests use it too.
+///
+/// Each download goes to its own staging folder and is moved into place only once it
+/// is complete, so an interrupted, cancelled or concurrent download never leaves a
+/// half-written model where the app loads from.
 enum ModelFiles {
     /// Tests point this at a temporary directory.
     static var rootOverride: URL?
@@ -26,31 +32,34 @@ enum ModelFiles {
 
     static let completeMarker = ".complete"
 
-    /// The WhisperKit models every speech variant must contain, with their weights.
+    /// Files every WhisperKit variant must have, non-empty, to count as installed.
     static let requiredSpeechFiles = [
-        "AudioEncoder.mlmodelc/coremldata.bin", "AudioEncoder.mlmodelc/weights/weight.bin",
-        "TextDecoder.mlmodelc/coremldata.bin", "TextDecoder.mlmodelc/weights/weight.bin",
-        "MelSpectrogram.mlmodelc/coremldata.bin", "MelSpectrogram.mlmodelc/weights/weight.bin",
+        "AudioEncoder.mlmodelc/coremldata.bin", "AudioEncoder.mlmodelc/model.mil", "AudioEncoder.mlmodelc/weights/weight.bin",
+        "TextDecoder.mlmodelc/coremldata.bin", "TextDecoder.mlmodelc/model.mil", "TextDecoder.mlmodelc/weights/weight.bin",
+        "MelSpectrogram.mlmodelc/coremldata.bin", "MelSpectrogram.mlmodelc/model.mil", "MelSpectrogram.mlmodelc/weights/weight.bin",
+        "config.json",
     ]
 
-    private static var speechBase: URL { root.appendingPathComponent("speech", isDirectory: true) }
+    /// Where WhisperKit falls back to fetching a tokenizer that isn't in the model folder.
+    static var speechBase: URL { root.appendingPathComponent("speech", isDirectory: true) }
     private static var speechRepo: URL { speechBase.appendingPathComponent("models/argmaxinc/whisperkit-coreml", isDirectory: true) }
+    static var staging: URL { root.appendingPathComponent(".staging", isDirectory: true) }
 
     /// The folder (WhisperKit) or file (GGUF) the runtime loads.
     static func localURL(for model: ModelInfo) -> URL {
         switch model.source {
-        case .whisperKit(let variant):
-            // Layout WhisperKit's Hub downloader uses under its download base.
+        case .whisperKit(let variant, _):
             speechRepo.appendingPathComponent(variant, isDirectory: true)
         case .gguf(_, let fileName):
             root.appendingPathComponent("translation/\(fileName)")
         }
     }
 
-    /// Everything on disk that belongs to `model`, including download caches.
+    /// Everything on disk that belongs to `model`, including the download cache older
+    /// builds left next to the model.
     static func allFiles(for model: ModelInfo) -> [URL] {
         switch model.source {
-        case .whisperKit(let variant):
+        case .whisperKit(let variant, _):
             [localURL(for: model), speechRepo.appendingPathComponent(".cache/huggingface/download/\(variant)", isDirectory: true)]
         case .gguf:
             [localURL(for: model)]
@@ -59,61 +68,113 @@ enum ModelFiles {
 
     static func isInstalled(_ model: ModelInfo) -> Bool {
         let url = localURL(for: model)
-        let files = FileManager.default
         switch model.source {
         case .whisperKit:
-            guard files.fileExists(atPath: url.appendingPathComponent(completeMarker).path) else { return false }
-            return requiredSpeechFiles.allSatisfy { files.fileExists(atPath: url.appendingPathComponent($0).path) }
+            guard FileManager.default.fileExists(atPath: url.appendingPathComponent(completeMarker).path) else { return false }
+            return requiredSpeechFiles.allSatisfy { size(of: url.appendingPathComponent($0)) > 0 }
         case .gguf:
             return isGGUF(url)
         }
     }
 
     /// Downloads the model and returns `localURL(for:)`. Cancelling the calling task
-    /// cancels the download. Leftovers of an earlier, interrupted download are removed first.
+    /// cancels the download; nothing of a failed or cancelled attempt is left behind.
     static func download(_ model: ModelInfo, progress: @escaping @Sendable (Double) -> Void) async throws -> URL {
         let lock = try DownloadLock(root: root, id: model.id, name: model.name)
         defer { lock.release() }
-        if !isInstalled(model) { try delete(model) }
+        let attempt = staging.appendingPathComponent("\(model.id)-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: attempt) }
+        try FileManager.default.createDirectory(at: attempt, withIntermediateDirectories: true)
 
-        let destination = localURL(for: model)
+        let staged: URL
         switch model.source {
-        case .whisperKit(let variant):
-            let folder = try await WhisperKit.download(
-                variant: variant, downloadBase: speechBase, progressCallback: { progress($0.fractionCompleted) })
+        case .whisperKit(let variant, let tokenizer):
+            staged = try await WhisperKit.download(
+                variant: variant, downloadBase: attempt, progressCallback: { progress($0.fractionCompleted) })
             try Task.checkCancellation()
-            let missing = requiredSpeechFiles.filter {
-                !FileManager.default.fileExists(atPath: folder.appendingPathComponent($0).path)
-            }
-            guard missing.isEmpty else {
-                try? delete(model)
-                throw ModelFilesError.incomplete(model.name)
-            }
-            FileManager.default.createFile(atPath: folder.appendingPathComponent(completeMarker).path, contents: nil)
-            return folder
+            // The tokenizer lives in the model folder, so the model works offline and is
+            // deleted with it.
+            _ = try await ModelUtilities.loadTokenizer(for: tokenizer, tokenizerFolder: attempt)
+            try copyTokenizer(from: attempt, to: staged)
+            try Task.checkCancellation()
+            try markComplete(staged, name: model.name)
         case .gguf(let url, _):
             let observer = DownloadProgressObserver(onProgress: progress)
             let (temporary, response) = try await URLSession.shared.download(from: url, delegate: observer)
-            guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-                throw URLError(.badServerResponse)
-            }
-            guard isGGUF(temporary) else {
-                try? FileManager.default.removeItem(at: temporary)
-                throw ModelFilesError.incomplete(model.name)
-            }
-            try FileManager.default.createDirectory(
-                at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try? FileManager.default.removeItem(at: destination)
-            try FileManager.default.moveItem(at: temporary, to: destination)
-            return destination
+            staged = attempt.appendingPathComponent("model.gguf")
+            try FileManager.default.moveItem(at: temporary, to: staged)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            guard status == 200 else { throw ModelFilesError.badResponse(status) }
+            guard isGGUF(staged) else { throw ModelFilesError.incomplete(model.name) }
+        }
+
+        try install(staged, as: model)
+        return localURL(for: model)
+    }
+
+    /// Validates a downloaded WhisperKit folder and writes the marker `isInstalled` checks.
+    static func markComplete(_ folder: URL, name: String) throws {
+        guard requiredSpeechFiles.allSatisfy({ size(of: folder.appendingPathComponent($0)) > 0 }) else {
+            throw ModelFilesError.incomplete(name)
+        }
+        guard FileManager.default.createFile(atPath: folder.appendingPathComponent(completeMarker).path, contents: nil) else {
+            throw CocoaError(.fileWriteUnknown)
         }
     }
 
-    /// Removes the model and its download cache from disk.
+    /// Moves a finished download into place, replacing any previous copy.
+    static func install(_ staged: URL, as model: ModelInfo) throws {
+        let destination = localURL(for: model)
+        try removeFiles(model)
+        try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.moveItem(at: staged, to: destination)
+    }
+
+    /// Removes the model and its caches from disk. Fails with `.busy` while the model is
+    /// downloading anywhere, rather than deleting files out from under the download.
     static func delete(_ model: ModelInfo) throws {
+        let lock = try DownloadLock(root: root, id: model.id, name: model.name)
+        defer { lock.release() }
+        try removeFiles(model)
+    }
+
+    /// Removes staging folders of downloads that were interrupted (crash, force quit).
+    /// Folders whose download is still running elsewhere are kept.
+    static func removeAbandonedDownloads() {
+        guard let folders = try? FileManager.default.contentsOfDirectory(at: staging, includingPropertiesForKeys: nil) else { return }
+        for folder in folders {
+            guard let model = ModelCatalog.all.first(where: { folder.lastPathComponent.hasPrefix($0.id + "-") }),
+                  let lock = try? DownloadLock(root: root, id: model.id, name: model.name)
+            else { continue }
+            try? FileManager.default.removeItem(at: folder)
+            lock.release()
+        }
+    }
+
+    private static func removeFiles(_ model: ModelInfo) throws {
         for url in allFiles(for: model) where FileManager.default.fileExists(atPath: url.path) {
             try FileManager.default.removeItem(at: url)
         }
+    }
+
+    /// Copies the tokenizer files the Hub downloaded under `base` into the model folder.
+    private static func copyTokenizer(from base: URL, to modelFolder: URL) throws {
+        let files = FileManager.default.enumerator(at: base.appendingPathComponent("models/openai"), includingPropertiesForKeys: nil)
+        while let file = files?.nextObject() as? URL {
+            let name = file.lastPathComponent
+            guard name.hasPrefix("tokenizer") || ["vocab.json", "merges.txt", "special_tokens_map.json", "added_tokens.json"].contains(name)
+            else { continue }
+            let target = modelFolder.appendingPathComponent(name)
+            try? FileManager.default.removeItem(at: target)
+            try FileManager.default.copyItem(at: file, to: target)
+        }
+        guard FileManager.default.fileExists(atPath: modelFolder.appendingPathComponent("tokenizer.json").path) else {
+            throw ModelFilesError.incomplete("The tokenizer")
+        }
+    }
+
+    private static func size(of url: URL) -> Int {
+        (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
     }
 
     /// GGUF files start with the ASCII magic "GGUF".
@@ -124,8 +185,8 @@ enum ModelFiles {
     }
 }
 
-/// An exclusive, cross-process lock per model, so two downloads never write the same files.
-private final class DownloadLock {
+/// An exclusive, cross-process lock per model, held while downloading or deleting it.
+final class DownloadLock {
     private let descriptor: Int32
 
     init(root: URL, id: String, name: String) throws {

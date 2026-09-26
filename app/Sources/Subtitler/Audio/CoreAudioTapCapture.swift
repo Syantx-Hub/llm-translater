@@ -42,7 +42,10 @@ final class CoreAudioTapCapture: AudioCapture {
     var onSamples: (([Float]) -> Void)?
     var onStop: ((Error?) -> Void)?
 
-    private let queue = DispatchQueue(label: "subtitler.audio-tap")
+    /// Creates and destroys Core Audio objects. Separate from `ioQueue`, so stopping the
+    /// device never waits on a queue that is itself waiting to deliver an IO callback.
+    private let queue = DispatchQueue(label: "subtitler.audio-tap.control")
+    private let ioQueue = DispatchQueue(label: "subtitler.audio-tap.io", qos: .userInteractive)
     private var tapID = AudioObjectID(kAudioObjectUnknown)
     private var aggregateID = AudioObjectID(kAudioObjectUnknown)
     private var procID: AudioDeviceIOProcID?
@@ -56,8 +59,23 @@ final class CoreAudioTapCapture: AudioCapture {
         mSelector: kAudioHardwarePropertyDefaultSystemOutputDevice,
         mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
 
+    deinit {
+        if let listener = deviceListener {
+            AudioObjectRemovePropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &Self.defaultOutputAddress, queue, listener)
+        }
+        teardown()
+    }
+
     func start() async throws {
-        try queue.sync { try build() }
+        try queue.sync {
+            do {
+                try build()
+            } catch {
+                // A half-built tap (e.g. no output device) must not leak its Core Audio objects.
+                teardown()
+                throw error
+            }
+        }
         let listener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in self?.rebuild() }
         AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &Self.defaultOutputAddress, queue, listener)
         deviceListener = listener
@@ -114,7 +132,7 @@ final class CoreAudioTapCapture: AudioCapture {
         ]
         try check("create aggregate device", AudioHardwareCreateAggregateDevice(aggregate as CFDictionary, &aggregateID))
 
-        try check("create IO proc", AudioDeviceCreateIOProcIDWithBlock(&procID, aggregateID, queue) {
+        try check("create IO proc", AudioDeviceCreateIOProcIDWithBlock(&procID, aggregateID, ioQueue) {
             [weak self] _, input, _, _, _ in
             self?.receive(input)
         })
@@ -134,10 +152,19 @@ final class CoreAudioTapCapture: AudioCapture {
     }
 
     private func receive(_ bufferList: UnsafePointer<AudioBufferList>) {
-        guard let inputFormat, let converter,
-              let input = AVAudioPCMBuffer(pcmFormat: inputFormat, bufferListNoCopy: bufferList, deallocator: nil),
-              input.frameLength > 0
+        // If the output device also has inputs (USB interfaces, docks), their streams come
+        // first; the tap's stream is the last buffer.
+        let buffers = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: bufferList))
+        guard let tapBuffer = buffers.last, let data = tapBuffer.mData, let inputFormat, let converter else { return }
+        // Copy into a buffer we own: a no-copy AVAudioPCMBuffer would keep pointing at
+        // Core Audio's buffer list after this callback returns.
+        let bytesPerFrame = Int(inputFormat.streamDescription.pointee.mBytesPerFrame)
+        let frames = AVAudioFrameCount(Int(tapBuffer.mDataByteSize) / max(bytesPerFrame, 1))
+        guard frames > 0, let input = AVAudioPCMBuffer(pcmFormat: inputFormat, frameCapacity: frames),
+              let destination = input.audioBufferList.pointee.mBuffers.mData
         else { return }
+        input.frameLength = frames
+        memcpy(destination, data, Int(frames) * bytesPerFrame)
         let ratio = SystemAudioCapture.sampleRate / inputFormat.sampleRate
         guard let output = AVAudioPCMBuffer(
             pcmFormat: targetFormat, frameCapacity: AVAudioFrameCount(Double(input.frameLength) * ratio) + 32)

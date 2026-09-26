@@ -1,12 +1,20 @@
 import Foundation
 import WhisperKit
 
+struct Transcript: Equatable, Sendable {
+    let text: String
+    let language: String
+}
+
+/// Speech-to-text as the pipeline sees it; tests substitute a fake.
+protocol SpeechTranscribing: Sendable {
+    /// - Parameter language: Whisper code, or nil to auto-detect. Returns nil for no speech.
+    func transcribe(_ samples: [Float], language: String?) async throws -> Transcript?
+}
+
 /// On-device speech recognition with WhisperKit (CoreML on the Neural Engine / GPU).
-actor Transcriber {
-    struct Result {
-        let text: String
-        let language: String
-    }
+actor Transcriber: SpeechTranscribing {
+    typealias Result = Transcript
 
     private var whisper: WhisperKit?
 
@@ -24,7 +32,9 @@ actor Transcriber {
     func load(model: String, folder: URL) async throws {
         whisper = nil
         let config = WhisperKitConfig(
-            model: model, modelFolder: folder.path, verbose: false, logLevel: .error,
+            // tokenizerFolder: only a fallback (the tokenizer ships in the model folder),
+            // but it keeps WhisperKit from downloading into ~/Documents.
+            model: model, modelFolder: folder.path, tokenizerFolder: ModelFiles.speechBase, verbose: false, logLevel: .error,
             prewarm: true, load: true, download: false)
         whisper = try await WhisperKit(config)
     }
@@ -53,6 +63,6 @@ actor Transcriber {
         let results: [TranscriptionResult] = try await whisper.transcribe(audioArray: samples, decodeOptions: options)
         let text = results.map(\.text).joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !Self.hallucinations.contains(text.lowercased()) else { return nil }
-        return Result(text: text, language: results.first?.language ?? language ?? "")
+        return Transcript(text: text, language: results.first?.language ?? language ?? "")
     }
 }

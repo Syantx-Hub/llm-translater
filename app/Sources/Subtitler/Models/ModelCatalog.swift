@@ -1,4 +1,5 @@
 import Foundation
+import WhisperKit
 
 /// Everything the app can download. The app ships with no models; people pick and
 /// download them in the Models window, and can swap at any time.
@@ -8,8 +9,8 @@ struct ModelInfo: Identifiable, Hashable {
     }
 
     enum Source: Hashable {
-        /// A variant folder in argmaxinc/whisperkit-coreml.
-        case whisperKit(variant: String)
+        /// A variant folder in argmaxinc/whisperkit-coreml, plus the OpenAI tokenizer it uses.
+        case whisperKit(variant: String, tokenizer: ModelVariant)
         /// A single GGUF file run by llama.cpp.
         case gguf(url: URL, fileName: String)
     }
@@ -43,35 +44,35 @@ enum ModelCatalog {
             name: "Whisper Large v3 Turbo",
             summary: "The best balance of accuracy and speed for live subtitles.",
             strengths: ["Strong on Korean, Japanese, Chinese and English", "Fast enough for real time on every M-series chip"],
-            source: .whisperKit(variant: "openai_whisper-large-v3-v20240930"),
+            source: .whisperKit(variant: "openai_whisper-large-v3-v20240930", tokenizer: .largev3),
             sizeMB: 1620, speed: 4, quality: 5, license: "MIT", commercialUse: true, minRAMGB: 8, englishOnly: false),
         ModelInfo(
             id: "openai_whisper-large-v3-v20240930_626MB", kind: .speech,
             name: "Whisper Large v3 Turbo (compact)",
             summary: "Turbo compressed to a third of the size, with a small accuracy cost.",
             strengths: ["Leaves more memory for translation and other apps", "Good pick for 8 GB Macs that run a browser alongside"],
-            source: .whisperKit(variant: "openai_whisper-large-v3-v20240930_626MB"),
+            source: .whisperKit(variant: "openai_whisper-large-v3-v20240930_626MB", tokenizer: .largev3),
             sizeMB: 627, speed: 4, quality: 4, license: "MIT", commercialUse: true, minRAMGB: 8, englishOnly: false),
         ModelInfo(
             id: "openai_whisper-large-v3", kind: .speech,
             name: "Whisper Large v3",
             summary: "The most accurate model, at roughly half Turbo's speed.",
             strengths: ["Best with accents, noise and fast dialogue", "Pick it on Pro, Max or Ultra chips"],
-            source: .whisperKit(variant: "openai_whisper-large-v3"),
+            source: .whisperKit(variant: "openai_whisper-large-v3", tokenizer: .largev3),
             sizeMB: 3090, speed: 2, quality: 5, license: "MIT", commercialUse: true, minRAMGB: 16, englishOnly: false),
         ModelInfo(
             id: "openai_whisper-small", kind: .speech,
             name: "Whisper Small",
             summary: "Light and quick; fine for clear speech.",
             strengths: ["Low latency, low battery use", "Good for English and clear dialogue"],
-            source: .whisperKit(variant: "openai_whisper-small"),
+            source: .whisperKit(variant: "openai_whisper-small", tokenizer: .small),
             sizeMB: 486, speed: 5, quality: 3, license: "MIT", commercialUse: true, minRAMGB: 8, englishOnly: false),
         ModelInfo(
             id: "distil-whisper_distil-large-v3", kind: .speech,
             name: "Distil-Whisper Large v3 (English)",
             summary: "Near-Large accuracy for English at much higher speed.",
             strengths: ["Fastest high-accuracy option for English", "English audio only"],
-            source: .whisperKit(variant: "distil-whisper_distil-large-v3"),
+            source: .whisperKit(variant: "distil-whisper_distil-large-v3", tokenizer: .largev3),
             sizeMB: 1515, speed: 5, quality: 4, license: "MIT", commercialUse: true, minRAMGB: 8, englishOnly: true),
     ]
 

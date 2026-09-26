@@ -53,7 +53,7 @@ struct CaptionLayer: View {
                         } else {
                             Text(draft.text)
                                 .font(.system(size: style.fontSize * 0.55 * scale))
-                                .foregroundStyle(.gray)
+                                .foregroundStyle(style.textColor.opacity(0.55))
                         }
                     }
                 }

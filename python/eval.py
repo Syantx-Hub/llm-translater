@@ -11,6 +11,8 @@ Usage:
     python eval.py clip.mp4 --madlad-ct2 models/madlad400-3b-ct2
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import platform

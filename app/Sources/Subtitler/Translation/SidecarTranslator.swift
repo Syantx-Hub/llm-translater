@@ -4,18 +4,20 @@ enum SidecarError: LocalizedError {
     case notFound(String)
     case exited(Int32)
     case remote(String)
+    case timedOut
 
     var errorDescription: String? {
         switch self {
         case .notFound(let path): "Translation sidecar not found at \(path). See README: set up python/.venv."
         case .exited(let code): "Translation sidecar exited (code \(code)). Check the Console log for details."
         case .remote(let message): "Translation failed: \(message)"
+        case .timedOut: "The translation sidecar did not start in time."
         }
     }
 }
 
 /// Where the Python sidecar lives. For development builds this is the repo checkout,
-/// baked into Info.plist by scripts/build-app.sh or overridden with SUBTITLER_REPO.
+/// baked into Info.plist by `scripts/build-app.sh --dev` or overridden with SUBTITLER_REPO.
 struct SidecarLocation {
     let python: URL
     let script: URL
@@ -115,6 +117,13 @@ actor SidecarTranslator: Translator {
         self.process = process
         self.input = stdin.fileHandleForWriting
         if !ready {
+            // Loading can involve a model download, but a sidecar that never answers must
+            // not leave the app stuck in "Starting translator…".
+            let timeout = Task { [weak self] in
+                try await Task.sleep(for: .seconds(300))
+                await self?.failAll(SidecarError.timedOut)
+            }
+            defer { timeout.cancel() }
             try await withCheckedThrowingContinuation { readyWaiter = $0 }
         }
     }

@@ -1,5 +1,13 @@
 // swift-tools-version: 5.10
+import Foundation
 import PackageDescription
+
+// With only the Command Line Tools installed, the Swift Testing macro plugin sits in a
+// subfolder the compiler doesn't search; point it there. Xcode installs need nothing.
+let testingPlugins = "/Library/Developer/CommandLineTools/usr/lib/swift/host/plugins/testing"
+let testSwiftSettings: [SwiftSetting] = FileManager.default.fileExists(atPath: testingPlugins)
+    ? [.unsafeFlags(["-plugin-path", testingPlugins])]
+    : []
 
 let package = Package(
     name: "Subtitler",
@@ -28,6 +36,12 @@ let package = Package(
                 // llama.framework ships in Subtitler.app/Contents/Frameworks.
                 .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"]),
             ]
+        ),
+        .testTarget(
+            name: "SubtitlerTests",
+            dependencies: ["Subtitler"],
+            path: "Tests/SubtitlerTests",
+            swiftSettings: testSwiftSettings
         ),
     ]
 )

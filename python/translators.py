@@ -3,6 +3,8 @@
 Every engine takes the language pair per call, so one loaded model serves any pair.
 """
 
+from __future__ import annotations
+
 import gc
 
 MADLAD_ID = "google/madlad400-3b-mt"
