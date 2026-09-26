@@ -18,8 +18,9 @@ For how it all works inside, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
   Whisper covers every other language and Auto-detect.
 - **Translate or transcribe only** — pick the mode in the main window. Translate mode
   shows each line once the sentence is finished.
-- **Translate subtitle files** — drop an `.srt`/`.vtt` in and get a translated file next to
-  it (`Movie.en.srt` → `Movie.my.srt`) that players load automatically. Because it's done
+- **Save a translated copy** — in Subtitle file mode, "Save Translated Copy…" writes the
+  file translated next to the original (`Movie.en.srt` → `Movie.my.srt`), which players
+  load automatically. Because it's done
   ahead of time, the subtitles appear exactly when the actors speak.
 - **Subtitle file mode (synced)** — pick the subtitles for what you're watching (a file,
   or found on OpenSubtitles), press Start while the video plays, and Subtitler finds its

@@ -638,7 +638,7 @@ UserDefaults on change.
 ## 10b. Translating subtitle files
 
 Live captions can never be early: a sentence can only be translated once it has been
-heard. For films that already have subtitles, **Translate Subtitles** translates the
+heard. For films that already have subtitles, **Save Translated Copy** (in Subtitle file mode) translates the
 file ahead of time instead, so the translation keeps the original timing and appears
 exactly when the actor speaks.
 

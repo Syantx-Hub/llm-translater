@@ -4,6 +4,8 @@ import UniformTypeIdentifiers
 struct ControlPanel: View {
     @ObservedObject var state: AppState
     @ObservedObject var models: ModelStore
+    /// Saving a translated copy of the chosen subtitle file.
+    @ObservedObject var subtitleJob: SubtitleJob
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
@@ -23,12 +25,6 @@ struct ControlPanel: View {
                 Text(error).font(.caption).foregroundStyle(.orange).lineLimit(3)
             }
             Divider()
-            Button {
-                show("subtitles")
-            } label: {
-                Label("Translate a subtitle file…", systemImage: "doc.text")
-            }
-            .buttonStyle(.link)
             HStack {
                 Button("Captions…") { show("captions") }
                 Button("Models…") { show("models") }
@@ -90,15 +86,18 @@ struct ControlPanel: View {
                     }
                 }
                 if state.mode.translates {
-                    Picker("Subtitles in", selection: $state.targetLanguage) {
+                    Picker(state.mode == .synced ? "Translate to" : "Subtitles in", selection: $state.targetLanguage) {
                         ForEach(Languages.all) { Text($0.name).tag($0.code) }
                     }
                 }
                 Picker("Responsiveness", selection: $state.responsiveness) {
                     ForEach(Responsiveness.allCases) { Text($0.label).tag($0) }
                 }
-                Toggle("Hide lines that were hard to hear", isOn: $state.hidesUnclearLines)
-                    .help("Skips lines the speech model wasn't sure about, instead of showing (and translating) misheard words.")
+                if state.mode != .synced {
+                    // Subtitle-file mode shows the file's lines, so misheard words never show.
+                    Toggle("Hide lines that were hard to hear", isOn: $state.hidesUnclearLines)
+                        .help("Skips lines the speech model wasn't sure about, instead of showing (and translating) misheard words.")
+                }
             }
             .disabled(state.isRunning || state.isBusy)
 
@@ -152,6 +151,12 @@ struct ControlPanel: View {
             if !state.syncCues.isEmpty {
                 Picker("File is in", selection: $state.syncLanguage) {
                     ForEach(Languages.all) { Text($0.name).tag($0.code) }
+                }
+                .disabled(state.isRunning || state.isBusy)
+                // The same file, translated ahead of time into an .srt for any video player.
+                Button("Save Translated Copy…") {
+                    if let file = state.syncFile { subtitleJob.load(file) }
+                    show("subtitles")
                 }
                 .disabled(state.isRunning || state.isBusy)
             }

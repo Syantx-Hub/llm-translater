@@ -47,14 +47,14 @@ struct SubtitlerApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            ControlPanel(state: state, models: models)
+            ControlPanel(state: state, models: models, subtitleJob: subtitleJob)
         } label: {
             MenuBarIcon(running: state.isRunning, needsSetup: models.needsSetup)
         }
         .menuBarExtraStyle(.window)
 
         Window("Subtitler", id: "main") {
-            ControlPanel(state: state, models: models)
+            ControlPanel(state: state, models: models, subtitleJob: subtitleJob)
         }
         .windowResizability(.contentSize)
 
