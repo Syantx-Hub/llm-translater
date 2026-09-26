@@ -56,11 +56,22 @@ actor FakeTranscriber: SpeechTranscribing {
 actor FakeTranslator: Translator {
     private let delays: [String: Duration]
     private let failing: Set<String>
+    private let streams: Bool
     private(set) var calls: [String] = []
 
-    init(delays: [String: Duration] = [:], failing: Set<String> = []) {
+    init(delays: [String: Duration] = [:], failing: Set<String> = [], streams: Bool = false) {
         self.delays = delays
         self.failing = failing
+        self.streams = streams
+    }
+
+    func translate(_ text: String, from source: String, to target: String, context: [String],
+                   partial: @escaping @Sendable (String) -> Void) async throws -> String {
+        if streams {
+            partial("[\(target)] \(text.prefix(text.count / 2))")
+            try await Task.sleep(for: .milliseconds(50)) // generating takes a while
+        }
+        return try await translate(text, from: source, to: target, context: context)
     }
 
     struct Failure: Error {}

@@ -69,6 +69,17 @@ actor SubtitlePipeline {
     /// so a final usually finds all but its last sentence here.
     private var sentenceCache: [String: String] = [:]
     private var sentenceCacheOrder: [String] = []
+    /// The newest source text of the line being spoken.
+    private var liveSource: String?
+    /// Set when the live line shows the current utterance; a finished line's streamed
+    /// translation must not overwrite the next line's words.
+    private var liveShowsNextLine = false
+    /// Identifies the final whose translation is streaming into the live line.
+    private var streamingCommit = 0
+    /// Source text of a draft translation a committed final is waiting for.
+    private var awaitedDraft: String?
+    /// Sentences of the current streaming phrase already shown as finished lines.
+    private var committedSentences = 0
 
     init(transcriber: any SpeechTranscribing, translator: Translator, source: String?, target: String?,
          translateDrafts: Bool = true, emit: @escaping @Sendable (Update) -> Void) {
@@ -118,10 +129,10 @@ actor SubtitlePipeline {
 
     /// Waits until every submitted segment has been transcribed and translated.
     func flush() async {
-        while draining {
-            try? await Task.sleep(for: .milliseconds(50))
+        // A draft translation clears `draftTranslation` once its result has been shown.
+        while draining || draftTranslation != nil {
+            try? await Task.sleep(for: .milliseconds(20))
         }
-        _ = await draftTranslation?.task.value
         await translationChain?.value
     }
 
@@ -171,14 +182,36 @@ actor SubtitlePipeline {
         // A waiting final supersedes this draft on screen.
         guard finals.isEmpty else { return }
         // Language is only locked from finals: a half-second draft is too short to trust.
+        showDraft(result.text)
+    }
+
+    /// Shows the words being spoken. Only finished sentences and clauses are translated:
+    /// word order differs between languages (Burmese puts the verb last), so translating
+    /// half a sentence gives words that change or are simply wrong. The unfinished rest
+    /// shows in the original language until it is complete.
+    private func showDraft(_ text: String) {
+        liveSource = text
+        liveShowsNextLine = true
         guard translateDrafts, sourceNeedsTranslation else {
-            emit(.draft(DraftCaption(text: result.text, isTranslation: false)))
+            emit(.draft(DraftCaption(text: text, isTranslation: false)))
             return
         }
-        // Until the first translated draft lands, show the source text.
-        if draftTranslation == nil { emit(.draft(DraftCaption(text: result.text, isTranslation: false))) }
-        pendingDraftText = result.text
-        startDraftTranslation()
+        let (complete, _) = Self.stableSplit(text)
+        if !complete.isEmpty, translatedDraft?.text != complete, draftTranslation?.text != complete {
+            pendingDraftText = complete
+            startDraftTranslation()
+        }
+        emit(.draft(composeDraft(text)))
+    }
+
+    /// The translation of the finished part (when known) followed by the untranslated rest.
+    private func composeDraft(_ text: String) -> DraftCaption {
+        let (complete, tail) = Self.stableSplit(text)
+        guard let done = translatedDraft, complete.hasPrefix(done.text) else {
+            return DraftCaption(text: text, isTranslation: false)
+        }
+        let untranslated = (String(complete.dropFirst(done.text.count)) + " " + tail).trimmingCharacters(in: .whitespaces)
+        return DraftCaption(text: [done.translation, untranslated].filter { !$0.isEmpty }.joined(separator: " "), isTranslation: true)
     }
 
     /// At most one draft translation runs; a newer draft replaces the queued one.
@@ -188,7 +221,9 @@ actor SubtitlePipeline {
         let generation = utterance
         let task = Task { [context] in
             let t0 = Date()
-            let result = try? await self.translateCached(text, from: from, to: target, context: context)
+            let result = try? await self.translateCached(text, from: from, to: target, context: context) { partial in
+                Task { await self.showDraftPartial(partial, of: text, generation: generation) }
+            }
             Trace.log("draft mt \(String(format: "%.2f", Date().timeIntervalSince(t0)))s")
             return result
         }
@@ -204,8 +239,8 @@ actor SubtitlePipeline {
         let text = draftTranslation?.text
         draftTranslation = nil
         if let translation, let text { translatedDraft = (text, translation) }
-        if let translation, finals.isEmpty {
-            emit(.draft(DraftCaption(text: translation, isTranslation: true)))
+        if translation != nil, finals.isEmpty, let liveSource {
+            emit(.draft(composeDraft(liveSource)))
         }
         startDraftTranslation()
     }
@@ -216,20 +251,42 @@ actor SubtitlePipeline {
     /// speech detection, so no segmenter or Whisper is involved.
     func submitVolatile(_ text: String) {
         guard !cancelled, !text.isEmpty else { return }
-        guard translateDrafts, sourceNeedsTranslation else {
-            emit(.draft(DraftCaption(text: text, isTranslation: false)))
-            return
+        var sentences = Self.sentences(in: text)
+        sentences.removeFirst(min(committedSentences, sentences.count))
+        // Apple Speech can keep a whole paragraph in one phrase. Once the speaker has moved
+        // on to another sentence, the ones before it are finished: show them as lines now
+        // rather than letting the live line grow until the phrase ends.
+        if sentences.count > 1 {
+            let finished = sentences.dropLast()
+            committedSentences += finished.count
+            sentences.removeFirst(finished.count)
+            commitEarly(finished.joined(separator: " "))
         }
-        if draftTranslation == nil, translatedDraft == nil {
-            emit(.draft(DraftCaption(text: text, isTranslation: false)))
-        }
-        pendingDraftText = text
-        startDraftTranslation()
+        showDraft(sentences.joined(separator: " "))
+    }
+
+    private func commitEarly(_ text: String) {
+        let inFlight = draftTranslation
+        utterance += 1
+        pendingDraftText = nil
+        draftTranslation = nil
+        translatedDraft = nil
+        liveSource = nil
+        Trace.log("early commit of \(Self.sentences(in: text).count) sentence(s)")
+        commit(text, endedAt: Date(), inFlight: inFlight, finished: nil)
     }
 
     /// A finished phrase from a streaming recognizer.
     func submitFinal(_ text: String, speechEndedAt: Date) {
         guard !cancelled, !text.isEmpty else { return }
+        var sentences = Self.sentences(in: text)
+        sentences.removeFirst(min(committedSentences, sentences.count))
+        committedSentences = 0
+        let text = sentences.joined(separator: " ")
+        guard !text.isEmpty else {
+            emit(.draft(nil))
+            return
+        }
         let inFlight = draftTranslation
         let finished = translatedDraft
         utterance += 1
@@ -237,6 +294,7 @@ actor SubtitlePipeline {
         pendingDraftText = nil
         draftTranslation = nil
         translatedDraft = nil
+        liveSource = nil
         Trace.log("stream final; mt \(finished?.text == text ? "reused" : inFlight?.text == text ? "in flight" : "needed")")
         commit(text, endedAt: speechEndedAt, inFlight: inFlight, finished: finished)
     }
@@ -257,6 +315,7 @@ actor SubtitlePipeline {
         pendingDraftText = nil
         draftTranslation = nil
         translatedDraft = nil
+        liveSource = nil
 
         Trace.log("final \(Trace.seconds(final.samples.count)) waited \(String(format: "%.2f", Date().timeIntervalSince(final.endedAt)))s in queue; reuse \(reusableText != nil && source != nil ? "hit" : "miss") (draft covers \(lastDraftCount.map(Trace.seconds) ?? "-"), mt \(finished != nil ? "done" : inFlight != nil ? "running" : "none"))")
         let text: String
@@ -290,6 +349,13 @@ actor SubtitlePipeline {
         let translate = sourceNeedsTranslation
         let draftTask = inFlight?.text == text ? inFlight?.task : nil
         let finishedTranslation = finished?.text == text ? finished?.translation : nil
+        // A draft translation of text the final doesn't start with only delays the final
+        // (the translator does one thing at a time). One that does will fill the sentence
+        // cache, so let it finish.
+        if let inFlight, draftTask == nil, !text.hasPrefix(inFlight.text) { inFlight.task.cancel() }
+        liveShowsNextLine = false
+        streamingCommit += 1
+        let commitID = streamingCommit
 
         let previous = translationChain
         translationChain = Task { [target] in
@@ -305,12 +371,20 @@ actor SubtitlePipeline {
                 self.emit(.line(original: text, translation: finishedTranslation, latency: latency()))
                 return
             }
-            if let draftTask, let translation = await draftTask.value {
-                self.emit(.line(original: text, translation: translation, latency: latency()))
-                return
+            if let draftTask {
+                self.awaitedDraft = text
+                let translation = await draftTask.value
+                self.awaitedDraft = nil
+                if let translation {
+                    self.emit(.line(original: text, translation: translation, latency: latency()))
+                    return
+                }
             }
             do {
-                let translation = try await self.translateCached(text, from: from, to: target, context: lineContext)
+                let translation = try await self.translateCached(text, from: from, to: target, context: lineContext) { partial in
+                    Task { await self.showStreamingTranslation(partial, commit: commitID) }
+                }
+                self.streamingCommit += 1 // late partials must not overwrite the finished line
                 self.emit(.line(original: text, translation: translation, latency: latency()))
             } catch {
                 guard !Task.isCancelled else { return }
@@ -322,8 +396,31 @@ actor SubtitlePipeline {
 
     // MARK: Translation
 
+    /// A draft translation as it is generated. While the line is still being spoken it is
+    /// followed by the untranslated rest; once the line's final is waiting on this very
+    /// translation, it shows on its own.
+    private func showDraftPartial(_ partial: String, of source: String, generation: Int) {
+        guard !partial.isEmpty else { return }
+        if generation == utterance, let liveSource {
+            let (complete, tail) = Self.stableSplit(liveSource)
+            guard complete.hasPrefix(source) else { return }
+            let rest = (String(complete.dropFirst(source.count)) + " " + tail).trimmingCharacters(in: .whitespaces)
+            emit(.draft(DraftCaption(text: [partial, rest].filter { !$0.isEmpty }.joined(separator: " "), isTranslation: true)))
+        } else if awaitedDraft == source, !liveShowsNextLine {
+            emit(.draft(DraftCaption(text: partial, isTranslation: true)))
+        }
+    }
+
+    /// A finished line's translation as it is generated, shown in the live line unless the
+    /// speaker has already started the next line.
+    private func showStreamingTranslation(_ text: String, commit: Int) {
+        guard commit == streamingCommit, !liveShowsNextLine, !text.isEmpty else { return }
+        emit(.draft(DraftCaption(text: text, isTranslation: true)))
+    }
+
     /// `translate(...)` with a per-sentence cache shared by drafts and finals.
-    private func translateCached(_ text: String, from source: String, to target: String, context: [String]) async throws -> String {
+    private func translateCached(_ text: String, from source: String, to target: String, context: [String],
+                                 partial: (@Sendable (String) -> Void)? = nil) async throws -> String {
         var parts: [String] = []
         for sentence in Self.sentences(in: text) {
             let key = "\(source)>\(target)|\(sentence)"
@@ -331,7 +428,10 @@ actor SubtitlePipeline {
                 parts.append(cached)
                 continue
             }
-            let translation = try await translator.translate(sentence, from: source, to: target, context: context)
+            let done = parts.joined(separator: " ")
+            let translation = try await translator.translate(sentence, from: source, to: target, context: context) { piece in
+                partial?([done, piece].filter { !$0.isEmpty }.joined(separator: " "))
+            }
             sentenceCache[key] = translation
             sentenceCacheOrder.append(key)
             if sentenceCacheOrder.count > 64 { sentenceCache[sentenceCacheOrder.removeFirst()] = nil }
@@ -349,6 +449,35 @@ actor SubtitlePipeline {
             parts.append(try await translator.translate(sentence, from: source, to: target, context: context))
         }
         return parts.joined(separator: " ")
+    }
+
+    /// Splits text into the part made of finished sentences and clauses, safe to translate
+    /// on its own, and the unfinished rest. A clause ends at a comma or semicolon once it has
+    /// a few words (or characters, for CJK and Burmese).
+    static func stableSplit(_ text: String) -> (complete: String, tail: String) {
+        let enders: Set<Character> = [".", "!", "?", "。", "！", "？", "။"]
+        let clauseMarks: Set<Character> = [",", ";", "，", "；", "、", "၊"]
+        let unspaced: Set<Character> = ["。", "！", "？", "။", "，", "；", "、", "၊"]
+        let characters = Array(text)
+        var cut = 0
+        var pieceStart = 0
+        for (index, character) in characters.enumerated() {
+            let next = index + 1 < characters.count ? characters[index + 1] : nil
+            // End of text counts: "Where have you been?" is a finished sentence.
+            let followedBySpace = next?.isWhitespace ?? true
+            guard enders.contains(character) || clauseMarks.contains(character),
+                  unspaced.contains(character) || followedBySpace else { continue }
+            let piece = String(characters[pieceStart...index])
+            let words = piece.split(whereSeparator: \.isWhitespace).count
+            let longEnough = enders.contains(character) || words >= 3 || (unspaced.contains(character) && piece.count >= 6)
+            if longEnough {
+                cut = index + 1
+                pieceStart = index + 1
+            }
+        }
+        let complete = String(characters[..<cut]).trimmingCharacters(in: .whitespaces)
+        let tail = String(characters[cut...]).trimmingCharacters(in: .whitespaces)
+        return (complete, tail)
     }
 
     /// Splits after sentence-ending punctuation followed by a space (so "3.5" and "Mr. X"

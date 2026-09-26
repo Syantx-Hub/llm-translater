@@ -400,12 +400,34 @@ line is emitted. `AppState` smooths it and shows it in the status line.
 In auto mode, the language is locked from the **first final**, never from a draft: half a
 second of audio is too little to trust. Until then, drafts are shown untranslated.
 
+### Live translation and word order
+
+Languages put words in different orders: Burmese, Korean and Japanese put the verb last,
+so half an English sentence can't be translated reliably, and a translation of it would
+keep changing. The live line therefore translates only what is finished:
+
+- `stableSplit` cuts the words heard so far into a *complete* part (sentences, and clauses
+  ending in a comma or semicolon once they have three or more words) and the unfinished
+  *tail*.
+- Only the complete part is translated. The live line shows its translation followed by
+  the tail in the original language. Until a sentence or clause is complete, the live
+  line shows the original words.
+- Translations stream in: `Translator.translate(..., partial:)` reports text every four
+  tokens, so the first translated words appear about 0.2 s after a sentence completes
+  instead of after the whole sentence (~1 s for Burmese on an M2).
+- When a line is finished, a draft translation of text the line doesn't start with is
+  cancelled; before this, the final waited for it behind the one-at-a-time translator.
+
 ### Streaming recognizers
 
 Apple Speech bypasses the segmenter path. `submitVolatile` shows the words and translates
 them, keeping at most one draft translation in flight. `submitFinal` commits the phrase
 through the same `commit()` as Whisper finals, reusing the draft translation when the text
 matches.
+
+Apple Speech sometimes keeps a whole paragraph in one phrase. Once a volatile result
+contains a sentence followed by more speech, that sentence is shown as a finished line
+right away, and the eventual final only adds the sentences not shown yet.
 
 Translations are also cached **per sentence** (64 entries). A volatile result often
 already contains the finished first sentences of a phrase, so the final only translates
@@ -501,8 +523,12 @@ by walking up from the working directory.
 
 ### Languages
 
-`Languages.swift` and `python/translators.py` list the same 16 languages. A Python test
-checks that they match: my, en, ko, ja, zh, th, vi, id, ms, hi, fr, es, de, pt, ru, ar.
+`Languages.swift` lists 45 languages: Burmese and the main film languages (English, Korean,
+Japanese, Chinese) first, then the rest by name. Codes are Whisper's ISO 639-1 codes, which
+MADLAD-400 uses as its `<2xx>` target tags too. `python/translators.py` covers 16 of them
+for the NLLB sidecar; a Python test checks that each is also in the Swift list. Apple
+Speech hears 9 of them (EN, KO, JA, ZH, FR, DE, ES, IT, PT); Apple Translation, which isn't
+used yet, lacks Burmese and Malay.
 
 ---
 
@@ -726,7 +752,7 @@ Notes:
 ## 15. Tests
 
 ```sh
-cd app && swift test                              # 67 tests, ~1–2 s
+cd app && swift test                              # 72 tests, ~1–2 s
 SUBTITLER_E2E=1 swift test --filter endToEnd      # real models, slow
 python3 -m unittest discover -s python/tests      # sidecar protocol
 ```

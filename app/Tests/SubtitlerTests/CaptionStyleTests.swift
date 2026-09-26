@@ -53,12 +53,15 @@ import Testing
 }
 
 @Suite struct SampleCaptionTests {
-    @Test func everySubtitleLanguageHasFourDistinctSampleLines() {
+    @Test func everySubtitleLanguageHasSampleLines() {
         for language in Languages.all {
             let lines = SampleCaptions.lines(language: language.code, translating: true)
             #expect(lines.count == 4, "\(language.code)")
-            // "Show original" needs something different from the translation to preview.
-            #expect(lines.allSatisfy { $0.original != $0.translation }, "\(language.code)")
+            // Languages with written samples show a distinct original, for "Show original";
+            // the rest preview with the English sample.
+            if SampleCaptions.translations[language.code] != nil {
+                #expect(lines.allSatisfy { $0.original != $0.translation }, "\(language.code)")
+            }
         }
     }
 

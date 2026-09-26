@@ -50,7 +50,7 @@ enum ModelCatalog {
     static let appleSpeech = ModelInfo(
         id: appleSpeechID, kind: .speech,
         name: "Apple Speech (instant)",
-        summary: "Words appear as they're spoken. English, Korean, Japanese, Chinese, French, German, Spanish and Portuguese.",
+        summary: "Words appear as they're spoken. English, Korean, Japanese, Chinese, French, German, Spanish, Italian and Portuguese.",
         strengths: ["Lowest lag: captions keep up with the speaker", "Built into macOS — nothing to download"],
         source: .system,
         sizeMB: 0, speed: 5, quality: 4, license: "Apple", commercialUse: true, minRAMGB: 8, englishOnly: false)

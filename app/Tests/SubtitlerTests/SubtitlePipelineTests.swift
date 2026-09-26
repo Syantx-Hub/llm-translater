@@ -134,14 +134,61 @@ import Testing
         #expect(updates.values.contains(.draft(nil)))
     }
 
-    @Test func draftsAreTranslatedWhileSpeaking() async {
-        let transcriber = FakeTranscriber(script: [1000: "Where have you"])
+    @Test func finishedSentencesAreTranslatedWhileSpeaking() async {
+        let transcriber = FakeTranscriber(script: [1000: "Where have you been?"])
         let (pipeline, updates) = pipeline(transcriber: transcriber)
 
         await pipeline.submit(.partial(samples(1000), isPause: true))
         await pipeline.flush()
 
-        #expect(updates.values.contains(.draft(DraftCaption(text: "[my] Where have you", isTranslation: true))))
+        #expect(updates.values.contains(.draft(DraftCaption(text: "[my] Where have you been?", isTranslation: true))))
+    }
+
+    /// Word order differs between languages, so half a sentence is never translated.
+    @Test func unfinishedWordsStayInTheOriginalLanguage() async {
+        let translator = FakeTranslator()
+        let (pipeline, updates) = pipeline(transcriber: FakeTranscriber(script: [:]), translator: translator)
+
+        await pipeline.submitVolatile("Where have you")
+        await pipeline.flush()
+
+        #expect(await translator.calls.isEmpty)
+        #expect(updates.values.last == .draft(DraftCaption(text: "Where have you", isTranslation: false)))
+    }
+
+    @Test func liveLineShowsTranslatedPartThenTheRest() async {
+        let (pipeline, updates) = pipeline(transcriber: FakeTranscriber(script: [:]))
+
+        await pipeline.submitVolatile("When we got home, nobody")
+        await pipeline.flush()
+        await pipeline.submitVolatile("When we got home, nobody answered")
+        await pipeline.flush()
+
+        #expect(updates.values.last == .draft(DraftCaption(text: "[my] When we got home, nobody answered", isTranslation: true)))
+    }
+
+    @Test func finalTranslationStreamsIntoTheLiveLine() async {
+        let translator = FakeTranslator(streams: true)
+        let (pipeline, updates) = pipeline(transcriber: FakeTranscriber(script: [:]), translator: translator, translateDrafts: false)
+
+        await pipeline.submitFinal("Don't worry about it.", speechEndedAt: Date())
+        await pipeline.flush()
+
+        let drafts = updates.values.compactMap { if case .draft(let d?) = $0 { d } else { nil } }
+        #expect(drafts.contains { $0.isTranslation && $0.text.hasPrefix("[my]") })
+        #expect(lines(updates).map(\.translation) == ["[my] Don't worry about it."])
+        // The finished line is the last thing shown; no late partial covers it.
+        if case .line = updates.values.last {} else { Issue.record("expected the line last") }
+    }
+
+    @Test func stableSplitFindsFinishedSentencesAndClauses() {
+        #expect(SubtitlePipeline.stableSplit("Where have you") == ("", "Where have you"))
+        #expect(SubtitlePipeline.stableSplit("I waited. Nobody") == ("I waited.", "Nobody"))
+        #expect(SubtitlePipeline.stableSplit("Don't worry, my brother will") == ("", "Don't worry, my brother will"))
+        #expect(SubtitlePipeline.stableSplit("When we got home, nobody was") == ("When we got home,", "nobody was"))
+        #expect(SubtitlePipeline.stableSplit("It costs 3.5 dollars") == ("", "It costs 3.5 dollars"))
+        #expect(SubtitlePipeline.stableSplit("你好。我很") == ("你好。", "我很"))
+        #expect(SubtitlePipeline.stableSplit("Where have you been?") == ("Where have you been?", ""))
     }
 
     @Test func transcribeOnlyKeepsCJKPunctuationSpacing() async {
@@ -204,7 +251,20 @@ import Testing
         await pipeline.flush()
 
         #expect(await translator.calls.filter { $0 == "I waited." }.count == 1)
-        #expect(lines(updates).map(\.translation) == ["[my] I waited. [my] Nobody came."])
+        #expect(lines(updates).map(\.translation) == ["[my] I waited.", "[my] Nobody came."])
+    }
+
+    @Test func finishedSentencesBecomeLinesBeforeTheLongPhraseEnds() async {
+        let (pipeline, updates) = pipeline(transcriber: FakeTranscriber(script: [:]), translateDrafts: false)
+
+        await pipeline.submitVolatile("Where were you? I waited")
+        await pipeline.flush()
+        #expect(lines(updates).map(\.original) == ["Where were you?"])
+
+        await pipeline.submitFinal("Where were you? I waited for you.", speechEndedAt: Date())
+        await pipeline.flush()
+        // The final only adds what wasn't shown yet.
+        #expect(lines(updates).map(\.original) == ["Where were you?", "I waited for you."])
     }
 
     @Test func streamingTranscribeOnlyShowsWordsAsTheyArrive() async {

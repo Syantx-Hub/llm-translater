@@ -63,6 +63,13 @@ actor LlamaTranslator: Translator {
     }
 
     func translate(_ text: String, from source: String, to target: String, context lines: [String]) async throws -> String {
+        try await translate(text, from: source, to: target, context: lines, partial: { _ in })
+    }
+
+    /// Reports the text every few tokens: a Burmese sentence takes about a second to
+    /// generate, so showing it as it comes cuts the wait for the first words.
+    func translate(_ text: String, from source: String, to target: String, context lines: [String],
+                   partial: @escaping @Sendable (String) -> Void) async throws -> String {
         guard let model, let context, let sampler else { throw LlamaError.loadFailed(modelPath) }
         let vocab = llama_model_get_vocab(model)
         llama_memory_clear(llama_get_memory(context), true)
@@ -89,6 +96,10 @@ actor LlamaTranslator: Translator {
             if llama_vocab_is_eog(vocab, token) { break }
             output.append(token)
             if Self.isLooping(output) { output.removeLast(8); break }
+            if output.count % 4 == 0 {
+                // A partial may end mid-character; drop the replacement mark that leaves.
+                partial(detokenize(output, vocab: vocab).trimmingCharacters(in: CharacterSet(charactersIn: " \u{FFFD}")))
+            }
             try Task.checkCancellation()
         }
         return detokenize(output, vocab: vocab).trimmingCharacters(in: .whitespacesAndNewlines)

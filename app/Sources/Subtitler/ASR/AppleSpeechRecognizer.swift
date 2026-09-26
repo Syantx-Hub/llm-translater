@@ -10,7 +10,7 @@ enum AppleSpeech {
     /// Region used when asking Speech for a language; any supported variant works.
     private static let preferredRegions: [String: String] = [
         "en": "en-US", "ko": "ko-KR", "ja": "ja-JP", "zh": "zh-CN",
-        "fr": "fr-FR", "de": "de-DE", "es": "es-ES", "pt": "pt-BR",
+        "fr": "fr-FR", "de": "de-DE", "es": "es-ES", "pt": "pt-BR", "it": "it-IT",
     ]
 
     /// Our language codes Apple Speech may support; `locale(for:)` gives the final answer.
