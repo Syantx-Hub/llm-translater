@@ -166,7 +166,9 @@ private struct MenuBarIcon: View {
             .accessibilityLabel(running ? "Subtitler, live" : needsSetup ? "Subtitler, needs setup" : "Subtitler")
             .task {
                 WindowRouter.shared.openWindow = openWindow
-                WindowRouter.shared.showAtLaunch(needsSetup || !WelcomeView.hasSeenTour ? "welcome" : "main")
+                // Like other menu bar apps, launch quietly into the menu bar; only a first
+                // run (or a new tour) opens a window. Opening the app again shows the panel.
+                if needsSetup || !WelcomeView.hasSeenTour { WindowRouter.shared.showAtLaunch("welcome") }
             }
     }
 }
