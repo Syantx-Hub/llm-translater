@@ -15,7 +15,7 @@ import Testing
     }
 
     private func lines(_ updates: Recorder<SubtitlePipeline.Update>) -> [(original: String, translation: String)] {
-        updates.values.compactMap { if case .line(let o, let t, _) = $0 { (o, t) } else { nil } }
+        updates.values.compactMap { if case .line(let o, let t, _, _) = $0 { (o, t) } else { nil } }
     }
 
     private func samples(_ count: Int) -> [Float] { [Float](repeating: 0.1, count: count) }

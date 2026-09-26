@@ -47,8 +47,8 @@ flowchart LR
    position first; if nothing fits, search the whole file.
 3. **Adopt a position**: score ≥ 0.8 with ≥ 20 characters syncs at once; ≥ 0.55 needs a
    second match agreeing within 1.5 s.
-4. **Anchor on the end of speech**: `anchor = speechEndedAt − cue.end` (subtitles end
-   roughly when the words do).
+4. **Anchor on the start of speech**: `anchor = speechStart − firstCue.start − bias`
+   (cue starts track the first word; ends are padded). See the measurements below.
 5. **Drift**: a later match agreeing with the clock nudges the anchor 30% towards it.
 6. **Seeks / ad breaks / next episode**: a match elsewhere is held as `pendingAnchor`; a
    second agreeing one moves the clock.
@@ -75,17 +75,51 @@ flowchart LR
 for text matching. Aligning a file in another language would need timing-only alignment
 (speech activity vs cue times), which isn't implemented.
 
-### Measured accuracy
+### Measured accuracy, and why the clock anchors on the start of speech
 
-`--file clip.wav --realtime --sync clip.srt` plays a clip with known cue times and prints
-the clock error. On a TTS clip (8 lines, M2, Whisper fast):
+`--file clip --realtime --sync clip.srt` plays audio with known cue times and prints, for
+every matched line, the clock error each end of it implies (+ = subtitles late).
 
-| Cue ends | Clock error |
-|---|---|
-| exactly at the end of speech | +0.02 to +0.05 s |
-| 0.5 s after the end of speech (typical padding) | −0.47 s (subtitles slightly early) |
+**A clean TTS clip** (8 lines, cue times = the exact speech times) looked perfect: +0.02 s.
+It hid the real problem, because nothing about it is like a film.
 
-The first run showed the clock drifting 0.15 s later per line. That was the harness,
+**A real film:** *Tears of Steel* (Blender, CC-BY): the official stereo mix (dialogue over
+music and effects) and its English SRT, 12 minutes, M2. Median error per matched line,
+outliers over 5 s (wrong-position matches) excluded:
+
+| Engine | Anchor | Lines | Median | Middle 50% |
+|---|---|---|---|---|
+| Whisper (Silero segmenter) | speech **start** vs cue start | 25 | +0.39 s | +0.19 … +0.60 |
+| Whisper | speech end vs cue end | 32 | −0.17 s | −0.37 … +0.13 (single lines ±1.5 s) |
+| Apple Speech | start | 64 | −0.84 s | −1.07 … −0.44 |
+| Apple Speech | end | 71 | −0.17 s | −0.67 … +0.06 |
+
+What the numbers say:
+
+- **Cue ends are unreliable.** Subtitlers pad ends for reading time, or trim them when the
+  next line follows; the end-based error swings by more than a second between lines.
+- **Cue starts are consistent, with a lead-in.** On the clean clip the segmenter finds
+  speech onsets within 0.02 s, so the +0.39 s on the film is the file: its cues start about
+  0.4 s before the words, a common subtitling habit. Taking that constant out makes the
+  clock follow the file's own timing, as a video player would show it.
+- **Apple Speech's phrase ranges start early**, with some of the silence before the words.
+- **The "0.8 s late" people saw with Apple Speech** was a bug, not the anchor: lines were
+  finished early at a Silero pause, and that path stamped the line with the time the code
+  ran rather than when the speech ended. In Subtitle file mode lag doesn't matter, so the
+  pipeline now uses only Apple's final results there, each with its exact audio range.
+
+So the clock anchors on `speech start − first cue start`, minus the measured bias for the
+engine that heard the line (`SubtitleSync.Bias`: +0.39 s segmenter, −0.84 s Apple). The
+start only counts when the heard line begins with the cue's first words (compared on the
+first dozen characters) and began at a real onset; otherwise it falls back to the end.
+The Timing control still nudges the result for files timed differently.
+
+Limits of this measurement: one film, one subtitle file. The dialogue stem (stereo mix
+minus the music-and-effects mix) didn't cancel cleanly (the two were mixed differently), so
+how late the segmenter notices the *end* of speech under music couldn't be separated from
+the cue padding.
+
+The first TTS run showed the clock drifting 0.15 s later per line. That was the harness,
 not the sync: sleeping 100 ms per chunk runs slower than real time. It now paces on an
 absolute schedule. A good lesson: check the measuring tool before trusting the measurement.
 

@@ -42,7 +42,8 @@ final class AppleSpeechRecognizer: @unchecked Sendable {
         case volatile(String)
         /// `speechEndedAt`: wall-clock estimate of when the phrase ended, for lag.
         /// `confidence`: Apple's average word confidence, 0–1.
-        case final(String, speechEndedAt: Date, confidence: Double?)
+        /// `speechStartedAt`: when the phrase began, from the result's audio range.
+        case final(String, speechEndedAt: Date, speechStartedAt: Date?, confidence: Double?)
     }
 
     /// Called on an arbitrary thread, in order.
@@ -92,8 +93,11 @@ final class AppleSpeechRecognizer: @unchecked Sendable {
                     guard !text.isEmpty else { continue }
                     if result.isFinal {
                         // Audio fed so far minus where the phrase ended = how long ago it ended.
+                        let now = Date()
                         let behind = max(0, self.audioFed - result.range.end.seconds)
-                        self.onEvent?(.final(text, speechEndedAt: Date().addingTimeInterval(-behind),
+                        let startBehind = max(0, self.audioFed - result.range.start.seconds)
+                        self.onEvent?(.final(text, speechEndedAt: now.addingTimeInterval(-behind),
+                                             speechStartedAt: now.addingTimeInterval(-startBehind),
                                              confidence: Self.confidence(of: result.text)))
                     } else {
                         self.onEvent?(.volatile(text))

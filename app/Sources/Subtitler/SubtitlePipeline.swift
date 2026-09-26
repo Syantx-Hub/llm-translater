@@ -1,5 +1,16 @@
 import Foundation
 
+/// When the speech behind a line was heard, on the wall clock. `start` is nil when it
+/// isn't a real onset (a line cut from the middle of longer speech).
+struct SpokenSpan: Equatable, Sendable {
+    /// Who timed it: each engine's times are off in its own, measurable way.
+    enum Source: Sendable { case segmenter, appleSpeech }
+
+    var start: Date?
+    var end: Date
+    var source: Source = .segmenter
+}
+
 /// `SUBTITLER_TRACE=1` prints pipeline timings to stderr, for latency work.
 enum Trace {
     static let enabled = ProcessInfo.processInfo.environment["SUBTITLER_TRACE"] == "1"
@@ -27,7 +38,8 @@ actor SubtitlePipeline {
         /// In-progress text for the current utterance (nil clears it).
         case draft(DraftCaption?)
         /// `latency`: seconds from the end of speech to the translated line.
-        case line(original: String, translation: String, latency: TimeInterval)
+        /// `spoken`: when the speech behind it was heard, for following a subtitle file.
+        case line(original: String, translation: String, latency: TimeInterval, spoken: SpokenSpan? = nil)
         case detectedLanguage(String)
         /// A line was dropped because the recognizer was unsure what was said.
         case unclear(String)
@@ -43,9 +55,22 @@ actor SubtitlePipeline {
     private struct Final {
         let samples: [Float]
         let trailingSilence: Int
+        let leadingSilence: Int?
         let endedAt: Date
+
+        /// Speech ended `trailingSilence` before the segmenter noticed; it began after the
+        /// pre-roll, if the utterance began with a real onset.
+        var spoken: SpokenSpan {
+            let rate = SystemAudioCapture.sampleRate
+            let end = endedAt.addingTimeInterval(-Double(trailingSilence) / rate)
+            let start = leadingSilence.map { end.addingTimeInterval(-Double(samples.count - trailingSilence - $0) / rate) }
+            return SpokenSpan(start: start, end: end)
+        }
     }
 
+    /// Show Apple Speech's sentences and pauses as lines before its final result. Off when
+    /// following a subtitle file, where only the finals' exact timing is wanted.
+    private let commitsEarly: Bool
     private let transcriber: any SpeechTranscribing
     private let translator: Translator
     /// nil when only transcribing.
@@ -102,7 +127,9 @@ actor SubtitlePipeline {
     private var pauseCommitPending = false
 
     init(transcriber: any SpeechTranscribing, translator: Translator, source: String?, target: String?,
-         translateDrafts: Bool = true, hidesUnclearLines: Bool = true, emit: @escaping @Sendable (Update) -> Void) {
+         translateDrafts: Bool = true, hidesUnclearLines: Bool = true, commitsEarly: Bool = true,
+         emit: @escaping @Sendable (Update) -> Void) {
+        self.commitsEarly = commitsEarly
         self.transcriber = transcriber
         self.translator = translator
         self.source = source
@@ -151,8 +178,9 @@ actor SubtitlePipeline {
             return
         }
         switch event {
-        case .final(let samples, let trailingSilence):
-            finals.append(Final(samples: samples, trailingSilence: trailingSilence, endedAt: Date()))
+        case .final(let samples, let trailingSilence, let leadingSilence):
+            finals.append(Final(samples: samples, trailingSilence: trailingSilence, leadingSilence: leadingSilence,
+                                endedAt: Date()))
             latestDraft = nil
             cancelRegularDraft()
         case .partial(_, false) where target != nil:
@@ -228,8 +256,9 @@ actor SubtitlePipeline {
     private func checkLanguage(of event: SpeechSegmenter.Event) {
         let samples: [Float]
         switch event {
-        case .final(let audio, let trailingSilence):
-            if trailingSilence > 0 { speakerPaused() }
+        case .final(let audio, let trailingSilence, let leadingSilence):
+            if trailingSilence > 0, commitsEarly { speakerPaused() }
+            _ = leadingSilence
             samples = audio
         case .partial(let audio, true): samples = audio
         case .partial: return
@@ -330,7 +359,7 @@ actor SubtitlePipeline {
         // A sentence it has already closed with punctuation is finished, so show it as a
         // line now instead of waiting for the phrase to end.
         let lastIsFinished = sentences.last.map(Self.endsSentence) ?? false
-        if sentences.count > 1 || (lastIsFinished && !sentences.isEmpty) {
+        if commitsEarly, sentences.count > 1 || (lastIsFinished && !sentences.isEmpty) {
             let finished = lastIsFinished ? sentences[...] : sentences.dropLast()
             sentences.removeFirst(finished.count)
             commitEarly(finished.joined(separator: " "))
@@ -376,6 +405,8 @@ actor SubtitlePipeline {
         return ""
     }
 
+    /// Lines committed from Apple's running text have no timing of their own: the text
+    /// trails the audio, so a subtitle file isn't positioned from them.
     private func commitEarly(_ text: String) {
         committedCharacters += SubtitleSync.normalize(text).count
         let inFlight = draftTranslation
@@ -385,11 +416,11 @@ actor SubtitlePipeline {
         translatedDraft = nil
         liveSource = nil
         Trace.log("early commit of \(Self.sentences(in: text).count) sentence(s)")
-        commit(text, endedAt: Date(), inFlight: inFlight, finished: nil)
+        commit(text, endedAt: Date(), spoken: nil, inFlight: inFlight, finished: nil)
     }
 
     /// A finished phrase from a streaming recognizer.
-    func submitFinal(_ text: String, speechEndedAt: Date, confidence: Double? = nil) {
+    func submitFinal(_ text: String, speechEndedAt: Date, speechStartedAt: Date? = nil, confidence: Double? = nil) {
         guard !cancelled, !text.isEmpty else { return }
         Trace.log("stream final confidence \(confidence.map { String(format: "%.2f", $0) } ?? "-")")
         pauseCommitPending = false
@@ -404,6 +435,7 @@ actor SubtitlePipeline {
             dropUnclear(text)
             return
         }
+        let uncommittedFull = text
         let text = uncommitted(text)
         committedCharacters = 0
         guard !text.isEmpty else {
@@ -419,7 +451,11 @@ actor SubtitlePipeline {
         translatedDraft = nil
         liveSource = nil
         Trace.log("stream final; mt \(finished?.text == text ? "reused" : inFlight?.text == text ? "in flight" : "needed")")
-        commit(text, endedAt: speechEndedAt, inFlight: inFlight, finished: finished)
+        // An early-committed start of this phrase makes its start time the wrong one.
+        let wasSplit = text != uncommittedFull
+        commit(text, endedAt: speechEndedAt,
+               spoken: SpokenSpan(start: wasSplit ? nil : speechStartedAt, end: speechEndedAt, source: .appleSpeech),
+               inFlight: inFlight, finished: finished)
     }
 
     private func dropUnclear(_ text: String) {
@@ -475,11 +511,11 @@ actor SubtitlePipeline {
             }
         }
 
-        commit(text, endedAt: final.endedAt, inFlight: inFlight, finished: finished)
+        commit(text, endedAt: final.endedAt, spoken: final.spoken, inFlight: inFlight, finished: finished)
     }
 
     /// Emits a finished line, reusing the draft's translation when it matches.
-    private func commit(_ text: String, endedAt: Date,
+    private func commit(_ text: String, endedAt: Date, spoken: SpokenSpan?,
                         inFlight: (text: String, task: Task<String?, Never>)?,
                         finished: (text: String, translation: String)?) {
         let from = source ?? ""
@@ -501,24 +537,24 @@ actor SubtitlePipeline {
             let latency = { Date().timeIntervalSince(endedAt) }
             // `translate` is false when only transcribing (no target) or the pair is unsupported.
             guard translate, let target else {
-                self.emit(.line(original: text, translation: text, latency: latency()))
+                self.emit(.line(original: text, translation: text, latency: latency(), spoken: spoken))
                 return
             }
             if let finishedTranslation {
-                self.emit(.line(original: text, translation: finishedTranslation, latency: latency()))
+                self.emit(.line(original: text, translation: finishedTranslation, latency: latency(), spoken: spoken))
                 return
             }
             if let draftTask, let translation = await draftTask.value {
-                self.emit(.line(original: text, translation: translation, latency: latency()))
+                self.emit(.line(original: text, translation: translation, latency: latency(), spoken: spoken))
                 return
             }
             do {
                 let translation = try await self.translateCached(text, from: from, to: target, context: lineContext)
-                self.emit(.line(original: text, translation: translation, latency: latency()))
+                self.emit(.line(original: text, translation: translation, latency: latency(), spoken: spoken))
             } catch {
                 guard !Task.isCancelled else { return }
                 self.emit(.error(error.localizedDescription))
-                self.emit(.line(original: text, translation: text, latency: latency()))
+                self.emit(.line(original: text, translation: text, latency: latency(), spoken: spoken))
             }
         }
     }

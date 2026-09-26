@@ -107,7 +107,7 @@ import Testing
         await translator.stop()
 
         let line = try #require(updates.values.compactMap { update -> (String, String)? in
-            if case .line(let o, let t, _) = update { (o, t) } else { nil }
+            if case .line(let o, let t, _, _) = update { (o, t) } else { nil }
         }.first)
         #expect(line.0.lowercased().contains("station"))
         // Output must be Unicode Burmese (U+1000–U+109F).

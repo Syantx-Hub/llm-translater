@@ -16,7 +16,7 @@ import Testing
     }
 
     private func finals(_ events: [SpeechSegmenter.Event]) -> [(samples: [Float], trailing: Int)] {
-        events.compactMap { if case .final(let s, let t) = $0 { (s, t) } else { nil } }
+        events.compactMap { if case .final(let s, let t, _) = $0 { (s, t) } else { nil } }
     }
 
     private func partials(_ events: [SpeechSegmenter.Event]) -> [[Float]] {
@@ -42,6 +42,26 @@ import Testing
         // and the onset frame counted once, not twice.
         let speech = final.samples.count - final.trailing - 10 * frame
         #expect(abs(speech - Audio.rate) <= frame)
+    }
+
+    /// Subtitle sync anchors on the start of speech: the final says where it began.
+    @Test func finalReportsWhereSpeechBegan() throws {
+        let events = run(Audio.silence(0.5) + Audio.tone(1) + Audio.silence(1.5))
+        guard case .final(let samples, _, let leading?) = events.last(where: {
+            if case .final = $0 { true } else { false }
+        }) else { Issue.record("no final with a known onset"); return }
+        #expect(leading == 10 * frame) // the 300 ms pre-roll, then the onset
+        // The speech after the pre-roll starts with the tone.
+        #expect(samples[leading..<(leading + frame)].contains { $0 != 0 })
+        #expect(samples[..<leading].allSatisfy { $0 == 0 })
+    }
+
+    @Test func aCarriedRemainderHasNoOnset() {
+        let events = run(Audio.silence(0.3) + speechLike(20) + Audio.silence(1.5))
+        let leadings = events.compactMap { if case .final(_, _, let leading) = $0 { Optional(leading) } else { nil } }
+        #expect(leadings.count >= 3)
+        #expect(leadings.first! != nil)                     // began at a real onset
+        #expect(leadings.dropFirst().allSatisfy { $0 == nil }) // continue after cuts at maxSeconds
     }
 
     /// The latency optimisation depends on this: the draft sent when the speaker pauses

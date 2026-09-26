@@ -14,7 +14,9 @@ final class SpeechSegmenter {
         case partial([Float], isPause: Bool)
         /// `trailingSilence`: samples of silence at the end. A draft of the first
         /// `count - trailingSilence` samples already heard every word.
-        case final([Float], trailingSilence: Int)
+        /// `leadingSilence`: samples before the speech began (the pre-roll), or nil when the
+        /// utterance continues one that was cut mid-speech, so its start isn't a real onset.
+        case final([Float], trailingSilence: Int, leadingSilence: Int? = nil)
     }
 
     /// Trade-off between how soon a line appears and how much context Whisper gets.
@@ -62,6 +64,8 @@ final class SpeechSegmenter {
     private var utterance: [Float] = []
     private var frameEnergies: [Float] = []
     private var inSpeech = false
+    /// Pre-roll samples at the start of the current utterance; nil after a mid-speech cut.
+    private var leadingSilence: Int?
     private var speechFrames = 0
     private var silenceFrames = 0
     private var samplesSincePartial = 0
@@ -107,6 +111,7 @@ final class SpeechSegmenter {
             // The onset frame itself is appended below, after the pre-roll.
             inSpeech = true
             utterance = preRoll.flatMap { $0 }
+            leadingSilence = utterance.count
             frameEnergies = preRoll.map { $0.reduce(0) { $0 + $1 * $1 } / Float($0.count) }
             preRoll.removeAll()
         }
@@ -144,7 +149,8 @@ final class SpeechSegmenter {
         let quietest = frameEnergies[start...].indices.min { frameEnergies[$0] < frameEnergies[$1] } ?? frameEnergies.count
         let cut = max(quietest, 1) * frameSize
 
-        onEvent?(.final(Array(utterance.prefix(cut)), trailingSilence: 0))
+        onEvent?(.final(Array(utterance.prefix(cut)), trailingSilence: 0, leadingSilence: leadingSilence))
+        leadingSilence = nil // the rest continues mid-speech
         utterance = Array(utterance.dropFirst(cut))
         frameEnergies = Array(frameEnergies.dropFirst(quietest))
         samplesSincePartial = utterance.count
@@ -153,7 +159,8 @@ final class SpeechSegmenter {
     }
 
     private func endUtterance(emit: Bool) {
-        if emit { onEvent?(.final(utterance, trailingSilence: silenceFrames * frameSize)) }
+        if emit { onEvent?(.final(utterance, trailingSilence: silenceFrames * frameSize, leadingSilence: leadingSilence)) }
+        leadingSilence = nil
         utterance.removeAll()
         frameEnergies.removeAll()
         inSpeech = false

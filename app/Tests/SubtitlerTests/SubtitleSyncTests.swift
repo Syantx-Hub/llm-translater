@@ -16,15 +16,59 @@ import Testing
     private func wall(_ videoTime: TimeInterval, anchor: Date) -> Date { anchor.addingTimeInterval(videoTime) }
 
     @Test func oneLongClearLineSyncs() throws {
-        let sync = SubtitleSync(cues: cues)
+        let sync = SubtitleSync(cues: cues, bias: .zero)
         #expect(sync.status(at: t0) == .searching)
         sync.observe("I was waiting for you at the station for two hours", speechEndedAt: wall(66, anchor: t0))
         let time = try #require(sync.videoTime(at: wall(70, anchor: t0)))
         #expect(abs(time - 70) < 0.01)
     }
 
+    @Test func anchorsOnTheStartWhenCueEndsArePadded() throws {
+        // The cue ends 1.2 s after the words (reading-time padding) and the detector noticed
+        // the end 0.4 s late; the start of speech still lines up with the cue's start.
+        let padded = [SubtitleCue(start: 63, end: 67.2, text: "I was waiting for you\nat the station for two hours.")]
+        let sync = SubtitleSync(cues: padded, bias: .zero)
+        sync.observe("I was waiting for you at the station for two hours",
+                     spoken: SpokenSpan(start: wall(63, anchor: t0), end: wall(66.4, anchor: t0)))
+        #expect(sync.lastObservation?.usedStart == true)
+        let time = try #require(sync.videoTime(at: wall(70, anchor: t0)))
+        #expect(abs(time - 70) < 0.01) // end-based would be 0.8 s early
+    }
+
+    @Test func eachEngineHasItsMeasuredBiasRemoved() throws {
+        let line = "I was waiting for you at the station for two hours"
+        // Silero noticed the start 0.39 s late: the clock still lands on time.
+        let whisper = SubtitleSync(cues: cues)
+        whisper.observe(line, spoken: SpokenSpan(start: wall(63.39, anchor: t0), end: wall(66, anchor: t0)))
+        #expect(abs(try #require(whisper.videoTime(at: wall(70, anchor: t0))) - 70) < 0.01)
+        // Apple's range began 0.84 s early.
+        let apple = SubtitleSync(cues: cues)
+        apple.observe(line, spoken: SpokenSpan(start: wall(62.16, anchor: t0), end: wall(66, anchor: t0), source: .appleSpeech))
+        #expect(abs(try #require(apple.videoTime(at: wall(70, anchor: t0))) - 70) < 0.01)
+    }
+
+    @Test func fallsBackToTheEndWhenTheLineStartsMidCue() throws {
+        // Heard only the second half of the cue: its start isn't the cue's start.
+        let sync = SubtitleSync(cues: cues, bias: .zero)
+        sync.observe("at the station for two hours",
+                     spoken: SpokenSpan(start: wall(64.5, anchor: t0), end: wall(66, anchor: t0)))
+        sync.observe("Nobody answered the phone",
+                     spoken: SpokenSpan(start: wall(67, anchor: t0), end: wall(69, anchor: t0)))
+        #expect(sync.isSynced)
+        let time = try #require(sync.videoTime(at: wall(70, anchor: t0)))
+        #expect(abs(time - 70) < 0.05)
+    }
+
+    @Test func noRealOnsetUsesTheEnd() {
+        let sync = SubtitleSync(cues: cues, bias: .zero)
+        sync.observe("I was waiting for you at the station for two hours",
+                     spoken: SpokenSpan(start: nil, end: wall(66, anchor: t0)))
+        #expect(sync.lastObservation?.usedStart == false)
+        #expect(sync.lastObservation?.endAnchor == t0)
+    }
+
     @Test func weakMatchesNeedASecondOpinion() {
-        let sync = SubtitleSync(cues: cues)
+        let sync = SubtitleSync(cues: cues, bias: .zero)
         // Partly misheard: close enough to match, not enough to trust alone.
         sync.observe("I was waiting at the station", speechEndedAt: wall(66, anchor: t0))
         #expect(!sync.isSynced)
@@ -34,21 +78,21 @@ import Testing
     }
 
     @Test func disagreeingWeakMatchesDontSync() {
-        let sync = SubtitleSync(cues: cues)
+        let sync = SubtitleSync(cues: cues, bias: .zero)
         sync.observe("I was waiting at the station", speechEndedAt: wall(66, anchor: t0))
         sync.observe("Nobody answered phone", speechEndedAt: wall(69, anchor: t0.addingTimeInterval(40)))
         #expect(!sync.isSynced)
     }
 
     @Test func unrelatedSpeechNeverSyncs() {
-        let sync = SubtitleSync(cues: cues)
+        let sync = SubtitleSync(cues: cues, bias: .zero)
         sync.observe("The quarterly revenue grew by twelve percent", speechEndedAt: t0)
         sync.observe("Please remember to subscribe to the channel", speechEndedAt: t0.addingTimeInterval(5))
         #expect(!sync.isSynced)
     }
 
     @Test func showsTheFilesLinesOnTheirOwnTime() {
-        let sync = SubtitleSync(cues: cues)
+        let sync = SubtitleSync(cues: cues, bias: .zero)
         sync.observe("I was waiting for you at the station for two hours", speechEndedAt: wall(66, anchor: t0))
         // The next line shows at its start — before anyone says it.
         #expect(sync.activeCues(at: wall(67.0, anchor: t0)) == [2])
@@ -57,7 +101,7 @@ import Testing
     }
 
     @Test func aSeekMovesTheClockAfterTwoAgreeingLines() throws {
-        let sync = SubtitleSync(cues: cues)
+        let sync = SubtitleSync(cues: cues, bias: .zero)
         sync.observe("I was waiting for you at the station for two hours", speechEndedAt: wall(66, anchor: t0))
         // The viewer skips ahead: now line 4 is heard although the clock says ~70 s.
         let jumped = t0.addingTimeInterval(-230) // new anchor
@@ -68,7 +112,7 @@ import Testing
     }
 
     @Test func pausingFreezesTheClock() throws {
-        let sync = SubtitleSync(cues: cues)
+        let sync = SubtitleSync(cues: cues, bias: .zero)
         sync.observe("I was waiting for you at the station for two hours", speechEndedAt: wall(66, anchor: t0))
         sync.pause(at: wall(66.5, anchor: t0))
         #expect(sync.status(at: wall(90, anchor: t0)) == .paused(videoTime: 66.5))
@@ -79,7 +123,7 @@ import Testing
 
     @Test func matchesLanguagesWithoutSpaces() {
         let korean = [SubtitleCue(start: 10, end: 12, text: "역에서 두 시간 동안 너를 기다렸어.")]
-        let sync = SubtitleSync(cues: korean)
+        let sync = SubtitleSync(cues: korean, bias: .zero)
         sync.observe("역에서 2시간 동안 너를 기다렸어", speechEndedAt: t0) // recognizer wrote the number as a digit
         sync.observe("역에서 두 시간 동안 너를 기다렸어", speechEndedAt: t0)
         #expect(sync.isSynced)

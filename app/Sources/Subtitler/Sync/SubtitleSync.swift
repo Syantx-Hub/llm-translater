@@ -31,19 +31,40 @@ final class SubtitleSync {
     private let minScore = 0.55
     private let strongScore = 0.8
 
-    init(cues: [SubtitleCue]) {
+    /// A constant bias to take out of the clock: how late each kind of anchor comes out with
+    /// each engine (positive: subtitles would show late). Measured on Tears of Steel (real
+    /// dialogue over music and effects, its official SRT) with `--file --realtime --sync`;
+    /// see docs/09-subtitle-sync.md.
+    struct Bias: Equatable, Sendable {
+        var start: TimeInterval
+        var end: TimeInterval
+        static let zero = Bias(start: 0, end: 0)
+        /// The segmenter finds speech onsets accurately (−0.02 s on clean speech), but real
+        /// subtitle files start a cue ~0.4 s before the words (lead-in): +0.39 s, median of
+        /// 25 lines, so the clock follows the file's own timing.
+        static let segmenter = Bias(start: 0.39, end: -0.17)
+        /// Apple's phrase ranges also begin with some of the silence before the words:
+        /// −0.84 s, median of 64 lines.
+        static let appleSpeech = Bias(start: -0.84, end: -0.17)
+
+        static func of(_ source: SpokenSpan.Source) -> Bias {
+            switch source {
+            case .segmenter: segmenter
+            case .appleSpeech: appleSpeech
+            }
+        }
+    }
+
+    /// nil: each line's own engine decides (the app); a fixed bias for tests.
+    let bias: Bias?
+
+    init(cues: [SubtitleCue], bias: Bias? = nil) {
         self.cues = cues
+        self.bias = bias
         normalized = cues.map { Self.normalize(SubtitleFile.plainText($0.text)) }
     }
 
     var isSynced: Bool { anchor != nil }
-
-    /// When the speech of a line that was just shown ended: the pipeline reports how long
-    /// the line took after the segmenter closed it, and the segmenter closes a line
-    /// `endSilence` after the last word (Apple Speech reports the end itself: pass 0).
-    static func speechEnd(lineShownAt shown: Date, latency: TimeInterval, endSilence: TimeInterval) -> Date {
-        shown.addingTimeInterval(-latency - endSilence)
-    }
 
     func status(at now: Date) -> Status {
         guard let time = videoTime(at: now) else { return .searching }
@@ -69,21 +90,56 @@ final class SubtitleSync {
 
     // MARK: Matching
 
-    /// Feeds a line the recognizer heard, ending at `speechEndedAt`. Returns the matched cue
-    /// when it moved or confirmed the clock.
+    /// One heard line matched to the file, with the clock each end of it implies; for
+    /// `--file --sync` measurements.
+    struct Observation {
+        let first: Int
+        let last: Int
+        let score: Double
+        /// The anchor from the start of speech and the first cue's start, when both line up.
+        let startAnchor: Date?
+        /// The anchor from the end of speech and the last cue's end.
+        let endAnchor: Date
+        let usedStart: Bool
+    }
+
+    private(set) var lastObservation: Observation?
+
     @discardableResult
     func observe(_ heard: String, speechEndedAt: Date) -> Int? {
+        observe(heard, spoken: SpokenSpan(start: nil, end: speechEndedAt))
+    }
+
+    /// Feeds a line the recognizer heard, spoken during `spoken`. Returns the matched cue
+    /// when it moved or confirmed the clock.
+    ///
+    /// The clock is anchored on the *start* of speech against the cue's start when it can
+    /// be: subtitlers time cue starts to the first word, while cue ends are padded for
+    /// reading time (or trimmed), and a voice-activity detector notices the end of speech
+    /// late under music. The end is the fallback: when the line began mid-speech, or began
+    /// part-way into its cue.
+    @discardableResult
+    func observe(_ heard: String, spoken: SpokenSpan) -> Int? {
+        let speechEndedAt = spoken.end
         let text = Self.normalize(heard)
         guard text.count >= 6, pausedAt == nil else { return nil }
-        let expected = videoTime(at: speechEndedAt)
+        let expected = videoTime(at: spoken.start ?? speechEndedAt)
         let near = expected.map { ($0 - searchWindow)...($0 + searchWindow) }
         // Look near where the clock says we are first; if nothing matches there, the video
         // may have jumped, so search the whole file.
         var match = bestMatch(text, near: near)
         if near != nil, (match?.score ?? 0) < minScore { match = bestMatch(text, near: nil) }
         guard let match, match.score >= minScore else { return nil }
-        // Anchor on the end of speech; subtitles end roughly when the words do.
-        let candidate = speechEndedAt.addingTimeInterval(-cues[match.last].end)
+        let endAnchor = speechEndedAt.addingTimeInterval(-cues[match.last].end)
+        // The start only counts if the heard line begins where the first cue does.
+        let startAnchor = spoken.start.flatMap { start in
+            Self.sameEdge(text, normalized[match.first], atStart: true)
+                ? start.addingTimeInterval(-cues[match.first].start) : nil
+        }
+        let bias = self.bias ?? Bias.of(spoken.source)
+        let candidate = startAnchor.map { $0.addingTimeInterval(-bias.start) } ?? endAnchor.addingTimeInterval(-bias.end)
+        lastObservation = Observation(first: match.first, last: match.last, score: match.score,
+                                      startAnchor: startAnchor, endAnchor: endAnchor, usedStart: startAnchor != nil)
 
         if let anchor {
             if abs(candidate.timeIntervalSince(anchor)) < agreement {
@@ -153,6 +209,16 @@ final class SubtitleSync {
     /// Spaces are dropped too, which also makes Chinese and Japanese comparable.
     static func normalize(_ text: String) -> String {
         String(text.lowercased().unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }.map(Character.init))
+    }
+
+    /// Whether two texts begin (or end) with the same words, compared on their first (or
+    /// last) dozen characters: a line heard from the middle of a cue doesn't.
+    static func sameEdge(_ heard: String, _ cue: String, atStart: Bool, length: Int = 12) -> Bool {
+        let n = min(length, heard.count, cue.count)
+        guard n >= 4 else { return false }
+        let a = atStart ? String(heard.prefix(n)) : String(heard.suffix(n))
+        let b = atStart ? String(cue.prefix(n)) : String(cue.suffix(n))
+        return dice(bigrams(a), bigrams(b)) >= 0.5
     }
 
     static func bigrams(_ text: String) -> [String: Int] {

@@ -281,6 +281,8 @@ final class AppState: ObservableObject {
                 translateDrafts: sessionMode == .translate,
                 // For syncing, even a shaky transcript can still match a line.
                 hidesUnclearLines: hidesUnclearLines && sessionMode != .synced,
+                // Syncing wants each phrase's exact timing, not speed.
+                commitsEarly: sessionMode != .synced,
                 emit: { [weak self] update in
                     DispatchQueue.main.async { self?.apply(update, session: id) }
                 })
@@ -367,7 +369,8 @@ final class AppState: ObservableObject {
             for await event in events {
                 switch event {
                 case .volatile(let text): await pipeline.submitVolatile(text)
-                case .final(let text, let ended, let confidence): await pipeline.submitFinal(text, speechEndedAt: ended, confidence: confidence)
+                case .final(let text, let ended, let started, let confidence):
+                    await pipeline.submitFinal(text, speechEndedAt: ended, speechStartedAt: started, confidence: confidence)
                 }
             }
         }
@@ -528,14 +531,13 @@ final class AppState: ObservableObject {
             break // sync mode shows the file's lines, never live words
         case .draft(let caption):
             draft = caption
-        case .line(let original, _, let seconds) where sync != nil:
+        case .line(let original, _, _, let spoken) where sync != nil:
             // Sync mode: what was heard only positions the file; its own lines are shown.
-            let speechEnded = SubtitleSync.speechEnd(
-                lineShownAt: Date(), latency: seconds,
-                endSilence: usesAppleSpeech ? 0 : Double(responsiveness.tuning.endSilenceMS) / 1000)
-            sync?.observe(original, speechEndedAt: speechEnded)
+            // A line with no timing of its own (a sentence cut from a longer phrase) can't
+            // say where the video is.
+            if let spoken { sync?.observe(original, spoken: spoken) }
             updateSyncedCaptions()
-        case .line(let original, let translation, let seconds):
+        case .line(let original, let translation, let seconds, _):
             draft = nil
             lines.append(SubtitleLine(original: original, translation: translation))
             if lines.count > 3 { lines.removeFirst(lines.count - 3) }

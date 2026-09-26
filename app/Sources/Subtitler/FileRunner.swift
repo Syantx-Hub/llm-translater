@@ -69,24 +69,36 @@ enum FileRunner {
             print("[mt] \(selection) ready in \(String(format: "%.1f", Date().timeIntervalSince(t0))) s")
 
             let start = playbackStart.value // the audio "starts playing" now
+            let observations = ObservationLog()
             let elapsed = { String(format: "%6.2f", Date().timeIntervalSince(start)) }
-            let endSilence = speech.isBuiltIn ? 0 : Double(responsiveness.tuning.endSilenceMS) / 1000
             let pipeline = SubtitlePipeline(
                 transcriber: transcriber, translator: translator, source: source,
-                target: sync == nil ? target : nil // as in the app, sync only needs what was said
+                // As in the app: sync only needs what was said, with exact timing.
+                target: sync == nil ? target : nil, commitsEarly: sync == nil
             ) { update in
-                if let sync, case .line(let original, _, let latency) = update {
-                    let ended = SubtitleSync.speechEnd(lineShownAt: Date(), latency: latency, endSilence: endSilence)
-                    let cue = sync.observe(original, speechEndedAt: ended)
+                if let sync, case .line(let original, _, _, let spoken) = update {
+                    guard let span = spoken else {
+                        print("[\(elapsed())] heard  \(original)  (no timing; not used for sync)")
+                        return
+                    }
+                    let cue = sync.observe(original, spoken: span)
                     let error = sync.anchor.map { String(format: "%+.2f s", $0.timeIntervalSince(start)) } ?? "not synced"
-                    print("[\(elapsed())] heard  \(original)  → cue \(cue.map { String($0 + 1) } ?? "-"), clock \(error)")
+                    // Each end's own verdict on this line: + means subtitles would show late.
+                    var ends = ""
+                    if let seen = sync.lastObservation, seen.last == cue ?? seen.last {
+                        let startError = seen.startAnchor.map { String(format: "%+.2f", $0.timeIntervalSince(start)) } ?? "  -  "
+                        ends = String(format: " [start %@, end %+.2f, cues %d-%d]", startError,
+                                      seen.endAnchor.timeIntervalSince(start), seen.first + 1, seen.last + 1)
+                        observations.append(seen)
+                    }
+                    print("[\(elapsed())] heard  \(original)  → cue \(cue.map { String($0 + 1) } ?? "-"), clock \(error)\(ends)")
                     return
                 }
                 switch update {
                 case .draft(let caption?) where !caption.text.isEmpty:
                     print("[\(elapsed())] draft\(caption.isTranslation ? "*" : " ") \(caption.text)")
                 case .draft: break
-                case .line(let original, let translation, let latency):
+                case .line(let original, let translation, let latency, _):
                     Trace.log("line shown: \(original)")
                     print("[\(elapsed())] line   \(original)\n                  -> \(translation)  (lag \(String(format: "%.2f", latency)) s)")
                 case .detectedLanguage(let code): print("[\(elapsed())] detected language: \(code)")
@@ -99,6 +111,10 @@ enum FileRunner {
                 try await runAppleSpeech(samples, source: source, realtime: realtime, pipeline: pipeline)
                 await pipeline.flush()
                 await translator.stop()
+                if let sync {
+                    print("[sync] clock " + (sync.anchor.map { String(format: "%+.2f s (positive: subtitles late)", $0.timeIntervalSince(start)) } ?? "never synced"))
+                    observations.summary(start: start)
+                }
                 print("[done] \(elapsed()) s")
                 return 0
             }
@@ -122,6 +138,7 @@ enum FileRunner {
             await translator.stop()
             if let sync {
                 print("[sync] clock " + (sync.anchor.map { String(format: "%+.2f s (positive: subtitles late)", $0.timeIntervalSince(start)) } ?? "never synced"))
+                observations.summary(start: start)
             }
             print("[done] \(elapsed()) s")
             return 0
@@ -145,7 +162,8 @@ enum FileRunner {
             for await event in events {
                 switch event {
                 case .volatile(let text): await pipeline.submitVolatile(text)
-                case .final(let text, let ended, let confidence): await pipeline.submitFinal(text, speechEndedAt: ended, confidence: confidence)
+                case .final(let text, let ended, let started, let confidence):
+                    await pipeline.submitFinal(text, speechEndedAt: ended, speechStartedAt: started, confidence: confidence)
                 }
             }
         }
@@ -281,5 +299,25 @@ private final class LockedDate: @unchecked Sendable {
         defer { lock.unlock() }
         if date == nil { date = Date() }
         return date!
+    }
+}
+
+/// Every matched line's start- and end-based clock error, for the `--sync` summary.
+private final class ObservationLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var items: [SubtitleSync.Observation] = []
+
+    func append(_ item: SubtitleSync.Observation) { lock.withLock { items.append(item) } }
+
+    func summary(start: Date) {
+        let items = lock.withLock { self.items }
+        func median(_ values: [Double]) -> String {
+            guard !values.isEmpty else { return "-" }
+            let sorted = values.sorted()
+            return String(format: "%+.2f s", sorted[sorted.count / 2])
+        }
+        let starts = items.compactMap { $0.startAnchor?.timeIntervalSince(start) }
+        let ends = items.map { $0.endAnchor.timeIntervalSince(start) }
+        print("[sync] \(items.count) matched lines; median error from speech start \(median(starts)) (\(starts.count) lines), from speech end \(median(ends))")
     }
 }
