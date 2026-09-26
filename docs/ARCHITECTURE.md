@@ -324,6 +324,15 @@ The language's on-device assets are installed through `AssetInventory` the first
 the status line shows the download. Apple Speech is listed in the catalog as a built-in
 model (`Source.system`): always installed, nothing to download or delete.
 
+### Where live lag comes from (M2, measured)
+
+For one line on the clean test clip, from the end of speech to the line on screen:
+~0.12 s to notice the pause, ~0.25 s for the audio to arrive in 100 ms chunks, the Whisper
+decode, then ~0.5 s of MADLAD translation. The decode dominates: 1.0–1.2 s with plain
+Turbo, 0.6 s with the `_turbo_632MB` variant (the recommended Whisper), 0.35 s with Whisper
+Small (less accurate). Apple Speech avoids the decode, but with background sound it took
+3–4 s to close a sentence, so Whisper (fast) is the quicker choice for films.
+
 ### Whisper (WhisperKit)
 
 `Transcriber` is an actor around `WhisperKit`. It conforms to `SpeechTranscribing`, the
@@ -696,7 +705,8 @@ a Korean drama). Aligning subtitles in another language would need timing-only a
 
 | Speech | Size | Notes |
 |---|---|---|
-| Apple Speech (instant) | Built in | Default on macOS 26; lowest lag; 8 languages |
+| Apple Speech (instant) | Built in | Default on macOS 26; lowest lag in quiet audio; 9 languages |
+| Whisper Large v3 Turbo (fast) | 632 MB | Recommended Whisper; Argmax's streaming encoder, ~0.6 s per line on an M2 |
 | Whisper Large v3 Turbo | 1.6 GB | Default; WhisperKit's pick on most chips |
 | Turbo (compact) | 627 MB | Leaves memory for other apps |
 | Large v3 | 3.1 GB | Most accurate; 16 GB+ |
