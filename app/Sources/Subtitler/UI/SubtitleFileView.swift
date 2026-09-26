@@ -9,12 +9,17 @@ struct SubtitleFileView: View {
     @ObservedObject var models: ModelStore
     /// The subtitles' language; MADLAD detects it by itself, so Auto-detect is fine.
     @AppStorage("subtitleSourceLanguage") private var source: String = Languages.auto
+    @Environment(\.openWindow) private var openWindow
+
+    private var isFinished: Bool {
+        if case .finished = job.phase { true } else { false }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Translate a subtitle file").font(.title2.weight(.semibold))
-                Text("Have subtitles for a film? Translate them ahead of time and they'll show exactly when the actors speak. The translated file is saved next to the original, named so video players load it automatically.")
+                Text("Save a translated copy").font(.title2.weight(.semibold))
+                Text("Translate a subtitle file ahead of time. The copy keeps the original timing, so it shows exactly when the actors speak, in any video player: it's saved next to the original and named so players load it automatically (Movie.en.srt → Movie.my.srt).")
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -29,9 +34,14 @@ struct SubtitleFileView: View {
                 Picker("Translate to", selection: $state.targetLanguage) {
                     ForEach(Languages.all) { Text($0.name).tag($0.code) }
                 }
-                LabeledContent("Translator", value: translatorName)
+                TranslationEnginePicker(models: models, mode: .synced, inForm: true) { openWindow(id: "models") }
             }
             .disabled(job.isWorking)
+            if let provider = models.cloudProvider, job.input != nil, !job.isWorking, !isFinished {
+                CloudEstimateView(estimate: job.estimate(target: state.targetLanguage, batchSize: CloudTranslator.defaultBatchSize,
+                                                         limits: models.cloudConfig.limits(for: provider)),
+                                  provider: provider, freeTier: models.cloudConfig.usesFreeTier(provider))
+            }
 
             status
             Spacer(minLength: 0)
@@ -83,7 +93,7 @@ struct SubtitleFileView: View {
         switch job.phase {
         case .idle, .loaded:
             if state.isRunning || state.isBusy {
-                Label("Stop live subtitles first — both need the translation model's memory.", systemImage: "info.circle")
+                Label("Stop live subtitles first: both need the translator.", systemImage: "info.circle")
                     .font(.callout).foregroundStyle(.secondary)
             } else if !models.translationReady {
                 Label("Download a translation model in Models first.", systemImage: "exclamationmark.triangle")
@@ -91,15 +101,23 @@ struct SubtitleFileView: View {
             }
         case .preparing:
             ProgressView("Loading the translation model…").progressViewStyle(.linear)
-        case .translating(let done, let total, _, let secondsLeft):
-            ProgressView(value: Double(done), total: Double(max(total, 1))) {
-                Text("Translating \(done) of \(total) lines")
-            } currentValueLabel: {
-                Text(secondsLeft.map { "About \(Self.duration($0)) left" } ?? "Estimating time left…")
+        case .translating(let done, let total, let requests, let secondsLeft):
+            VStack(alignment: .leading, spacing: 6) {
+                ProgressView(value: Double(done), total: Double(max(total, 1))) {
+                    Text("Translating \(done) of \(total) sentences")
+                } currentValueLabel: {
+                    Text([models.cloudProvider != nil ? "\(requests) request\(requests == 1 ? "" : "s") sent" : nil,
+                          secondsLeft.map { "about \(Self.duration($0)) left" } ?? "estimating time left…"]
+                        .compactMap { $0 }.joined(separator: " · "))
+                }
+                if let provider = models.cloudProvider { RateLimitCountdown(provider: provider.name) }
             }
         case .finished(let url):
-            Label("Saved \(url.lastPathComponent)", systemImage: "checkmark.circle.fill")
-                .foregroundStyle(.green)
+            VStack(alignment: .leading, spacing: 4) {
+                Label("Saved \(url.lastPathComponent)", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                HelpNote("Open the video in your player; it loads the translated subtitles automatically. In Subtitle file mode, Subtitler reuses this copy, so watching again sends nothing.")
+            }
         case .partial(_, let message):
             Label(message, systemImage: "pause.circle").foregroundStyle(.secondary)
         case .failed(let message):
@@ -120,7 +138,7 @@ struct SubtitleFileView: View {
             if job.isWorking {
                 Button("Cancel") { job.cancel() }
             } else {
-                Button("Translate") {
+                Button(startTitle) {
                     job.start(source: source, target: state.targetLanguage, translatorSelection: models.selectedTranslation)
                 }
                 .buttonStyle(.borderedProminent)
@@ -128,6 +146,11 @@ struct SubtitleFileView: View {
                 .disabled(!canStart)
             }
         }
+    }
+
+    private var startTitle: String {
+        if case .partial = job.phase { return "Continue" }
+        return models.cloudProvider == nil ? "Translate" : "Start"
     }
 
     private var canStart: Bool {

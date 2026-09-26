@@ -10,6 +10,12 @@ struct CaptionsView: View {
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
             VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("How subtitles look").font(.title2.weight(.semibold))
+                    Text("Every change shows in the preview at once, at your screen's real proportions.")
+                        .font(.callout).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 preview
                 Toggle("Preview on screen", isOn: $state.previewOnScreen)
                     .disabled(state.isRunning || state.isBusy)

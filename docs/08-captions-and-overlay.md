@@ -29,6 +29,10 @@ overlay, they drift apart. Render both with one view and scale it.
 - Font "Automatic" = Noto Sans Myanmar for Burmese (shapes stacked consonants correctly),
   system font otherwise. Both ship with macOS.
 - `SampleCaptions` has lines in every language so the preview shows real scripts.
+- The same `CaptionLayer` also powers the small preview in the panel and the tour
+  (`CaptionPreview` in `UI/Explain.swift`): choosing a mode replays a few seconds of what
+  that mode shows (words arriving for Transcribe, whole sentences for Translate, lines on a
+  running clock for Subtitle file), in your caption style.
 
 ## Try it
 

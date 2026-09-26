@@ -34,6 +34,13 @@ For how it all works inside, and the AI concepts behind each part, see [docs/](d
   A live preview, plus "Preview on screen", shows every change as you make it.
 - **Responsiveness** — Fast, Balanced or Accurate: how long a pause ends a line and how
   long a line may get. The main window shows the current lag while live.
+- **Guided** — a tour explains the three ways to use it; every setting says what it's
+  for, and a live preview shows what each mode puts on screen.
+- **Optional cloud translation** — OpenAI, Anthropic, Gemini, Mistral, DeepSeek, Groq,
+  OpenRouter, or a local Ollama / LM Studio, with your own key (kept in the Keychain).
+  Best for subtitle files: translated in context, cached next to the file. Offline MADLAD
+  stays the default; nothing is sent unless you choose a cloud engine. See
+  [docs/14-cloud-translation.md](docs/14-cloud-translation.md).
 - **Private** — audio never leaves the Mac and is never stored.
 
 ## Requirements
@@ -71,7 +78,7 @@ tccutil reset ScreenCapture com.syantxhub.subtitler    # Screen Recording (14.0�
 ## Pipeline
 
 Core Audio tap (16 kHz mono) → Silero VAD segmenter → Whisper (WhisperKit) or Apple Speech →
-MADLAD-400 via llama.cpp on the GPU → overlay.
+MADLAD-400 via llama.cpp on the GPU (or an optional cloud LLM) → overlay.
 
 The segmenter sends a draft whenever the speaker pauses and at regular intervals while
 they talk. Drafts are transcribed and translated immediately and shown in a lighter

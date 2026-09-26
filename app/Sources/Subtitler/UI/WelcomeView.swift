@@ -1,11 +1,12 @@
 import CoreGraphics
 import SwiftUI
 
-/// First-run setup: the app ships without models, so walk people through picking a
-/// speech model, a translation model and the audio permission.
+/// First-run setup and tour: what Subtitler does, the three ways to use it, then the
+/// models and the audio permission. It can be reopened any time from the panel's "?".
 struct WelcomeView: View {
     @ObservedObject var store: ModelStore
     @ObservedObject var state: AppState
+    @ObservedObject var style: CaptionStyle
     let onFinish: () -> Void
 
     // @StateObject rather than @State: the SwiftUI macro plugin behind @State ships only
@@ -22,15 +23,24 @@ struct WelcomeView: View {
         init(step: Step) { self.step = step }
     }
 
-    init(store: ModelStore, state: AppState, initialStep: Step = .welcome, onFinish: @escaping () -> Void) {
+    init(store: ModelStore, state: AppState, style: CaptionStyle, initialStep: Step = .welcome,
+         onFinish: @escaping () -> Void) {
         self.store = store
         self.state = state
+        self.style = style
         self.onFinish = onFinish
         _flow = StateObject(wrappedValue: Flow(step: initialStep))
     }
 
+    /// Bumped when the tour changes enough that existing users should see it once.
+    static let tourVersion = 2
+
+    static var hasSeenTour: Bool {
+        UserDefaults.standard.integer(forKey: "tourSeenVersion") >= tourVersion
+    }
+
     enum Step: Int, CaseIterable {
-        case welcome, speech, translation, permission, done
+        case welcome, mode, speech, translation, permission, done
     }
 
     var body: some View {
@@ -44,14 +54,19 @@ struct WelcomeView: View {
                 .padding(.horizontal, 24)
                 .padding(.vertical, 14)
         }
-        .frame(width: 640, height: 660)
-        .onAppear { store.refresh() }
+        .frame(width: 640, height: 680)
+        .onAppear {
+            store.refresh()
+            // Seen once: later launches open the panel instead (the "?" reopens the tour).
+            UserDefaults.standard.set(WelcomeView.tourVersion, forKey: "tourSeenVersion")
+        }
     }
 
     @ViewBuilder
     private var content: some View {
         switch step {
         case .welcome: welcome
+        case .mode: modeStep
         case .speech: speech
         case .translation: translation
         case .permission: permission
@@ -60,32 +75,91 @@ struct WelcomeView: View {
     }
 
     private var welcome: some View {
-        VStack(spacing: 20) {
-            Spacer(minLength: 20)
-            Image(systemName: "captions.bubble.fill")
-                .font(.system(size: 56))
-                .foregroundStyle(Color.accentColor)
+        VStack(spacing: 18) {
             VStack(spacing: 8) {
-                Text("Live subtitles for anything you watch").font(.title.weight(.semibold))
-                Text("Subtitler listens to your Mac's audio and shows translated subtitles on top of any app — even full-screen video.")
+                Text("Subtitles for anything you watch").font(.largeTitle.weight(.semibold))
+                Text("Subtitler listens to what your Mac plays and shows subtitles on top of any app, even full-screen video: translated into your language, or as spoken.")
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
-                    .frame(maxWidth: 460)
+                    .frame(maxWidth: 480)
             }
-            VStack(alignment: .leading, spacing: 12) {
-                feature("lock.shield", "Private", "Runs entirely on this Mac. Nothing is uploaded.")
-                feature("globe", "Burmese first", "Plus English, Korean, Japanese, Chinese, Thai and more.")
-                feature("arrow.down.circle", "Pick your models", "Download only what you need; switch any time.")
+            CaptionPreview(style: style, mode: .translate, language: state.targetLanguage, height: 170)
+                .frame(width: 302)
+            VStack(alignment: .leading, spacing: 10) {
+                Text("What it can do").font(.headline)
+                Grid(alignment: .topLeading, horizontalSpacing: 20, verticalSpacing: 12) {
+                    GridRow {
+                        capability("character.bubble", "Translate live", "Any video, stream or call, in your language as it's said.")
+                        capability("doc.text.magnifyingglass", "Follow a subtitle file", "Finds its place in the film's subtitles and shows them translated, exactly on time.")
+                    }
+                    GridRow {
+                        capability("text.bubble", "Transcribe", "The original words, as they're spoken.")
+                        capability("magnifyingglass", "Find subtitles online", "Search OpenSubtitles for films and TV episodes.")
+                    }
+                    GridRow {
+                        capability("textformat.size", "Your style", "Font, size, colours and position, with a live preview.")
+                        capability("square.and.arrow.down", "Save a translated copy", "Translate an .srt once and watch it in any video player.")
+                    }
+                }
             }
-            .padding(.top, 8)
-            Spacer()
+            .frame(maxWidth: 560, alignment: .leading)
+            HStack(spacing: 18) {
+                Label("Private: runs on this Mac; audio is never sent or stored", systemImage: "lock.shield")
+                Label("Burmese first, plus 44 languages", systemImage: "globe.asia.australia")
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .symbolRenderingMode(.hierarchical)
         }
+    }
+
+    private func capability(_ icon: String, _ title: String, _ detail: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: icon)
+                .symbolRenderingMode(.hierarchical)
+                .font(.title3)
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 24)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).font(.callout.weight(.semibold))
+                Text(detail).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(width: 270, alignment: .leading)
+    }
+
+    private var modeStep: some View {
+        stepLayout(
+            title: "How will you use Subtitler?",
+            subtitle: "There are three ways. Pick the one for what you watch most; you can switch any time in the panel."
+        ) {
+            HStack(alignment: .top, spacing: 18) {
+                ModeChooser(mode: $state.mode, showsBestFor: true)
+                    .frame(width: 300)
+                VStack(alignment: .leading, spacing: 10) {
+                    CaptionPreview(style: style, mode: state.mode, language: previewLanguage, height: 150)
+                    StepList(steps: state.mode.steps)
+                        .font(.callout)
+                    if state.mode == .synced {
+                        LearnMore(title: "Why a subtitle file?") {
+                            ForEach(CaptionMode.whySubtitleFile, id: \.self) { Text($0) }
+                        }
+                    }
+                }
+                .frame(width: 250)
+            }
+        }
+    }
+
+    private var previewLanguage: String {
+        state.mode.translates ? state.targetLanguage : "en"
     }
 
     private var speech: some View {
         stepLayout(
             title: "Choose a speech model",
-            subtitle: "This turns what you hear into text. We've marked the best fit for your \(Hardware.chipName) with \(Hardware.ramGB) GB."
+            subtitle: "The speech model turns what you hear into text, on this Mac. Recommended is the best fit for your \(Hardware.chipName) with \(Hardware.ramGB) GB; bigger models cope better with accents and background music."
         ) {
             ForEach(ModelCatalog.speech) { ModelCard(model: $0, store: store, compact: true) }
         }
@@ -93,15 +167,20 @@ struct WelcomeView: View {
 
     private var translation: some View {
         stepLayout(
-            title: "Choose a translation model",
-            subtitle: "This turns the text into your subtitle language. Skip it to show the original words only — you can add translation later."
+            title: "Choose your language and a translator",
+            subtitle: "The translation model turns the words into your subtitle language, offline on this Mac."
         ) {
             Picker("Subtitles in", selection: $state.targetLanguage) {
                 ForEach(Languages.all) { Text($0.name).tag($0.code) }
             }
-            .frame(maxWidth: 280)
+            .frame(maxWidth: 280, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.bottom, 4)
             ForEach(ModelCatalog.translation) { ModelCard(model: $0, store: store, compact: true) }
+            NoticeRow(symbol: "icloud",
+                      text: "Want more natural wording? Later you can add a cloud AI translator with your own key in Models › Cloud. It's optional; offline stays the default.")
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, 4)
         }
     }
 
@@ -149,20 +228,35 @@ struct WelcomeView: View {
 
     private var done: some View {
         VStack(spacing: 18) {
-            Spacer(minLength: 20)
-            Image(systemName: "checkmark.circle.fill").font(.system(size: 56)).foregroundStyle(.green)
-            Text("You're all set").font(.title.weight(.semibold))
-            VStack(spacing: 6) {
-                Text("Play any video, then click \(Image(systemName: "captions.bubble")) in the menu bar and press Start.")
+            Image(systemName: "checkmark.circle.fill")
+                .symbolRenderingMode(.hierarchical)
+                .font(.system(size: 50))
+                .foregroundStyle(.green)
+            Text("You're set up for \(state.mode.label)").font(.title.weight(.semibold))
+            VStack(alignment: .leading, spacing: 12) {
+                StepList(steps: state.mode.steps)
+                Divider()
+                Label {
+                    Text("Subtitler lives in the menu bar: click \(Image(systemName: "captions.bubble")) to open it, press Start, and change the mode there any time.")
+                } icon: {
+                    Image(systemName: "menubar.arrow.up.rectangle")
+                }
+                Label("Change the look of subtitles in Captions…; models and cloud translation in Models…",
+                      systemImage: "slider.horizontal.3")
                 if isDownloading {
-                    Text("Your models are still downloading; you can start once they finish.")
-                        .foregroundStyle(.secondary)
+                    Label("Your models are still downloading; you can start once they finish.", systemImage: "arrow.down.circle")
+                        .foregroundStyle(.orange)
                 }
             }
-            .multilineTextAlignment(.center)
-            .frame(maxWidth: 440)
-            Spacer()
+            .font(.callout)
+            .frame(maxWidth: 460, alignment: .leading)
+            .padding(18)
+            .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color(nsColor: .controlBackgroundColor)))
+            Text("You can take this tour again from \(Image(systemName: "questionmark.circle")) in the panel.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
+        .padding(.top, 24)
     }
 
     private var footer: some View {
@@ -175,7 +269,11 @@ struct WelcomeView: View {
             Spacer()
             switch step {
             case .welcome:
-                Button("Get started") { move(1) }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+                Button("Get Started") { move(1) }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+            case .mode:
+                Button("Continue with \(state.mode.label)") { move(1) }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
             case .speech:
                 Button("Continue") { move(1) }
                     .buttonStyle(.borderedProminent)
@@ -183,22 +281,23 @@ struct WelcomeView: View {
                     .disabled(!hasSpeechChoice)
             case .translation:
                 if hasTranslationChoice {
-                    Button("Continue") {
-                        state.mode = .translate // undo an earlier "Skip"
-                        move(1)
-                    }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+                    Button("Continue") { move(1) }
+                        .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
                 } else {
-                    Button("Skip — transcribe only") {
-                        state.mode = .transcribe
-                        move(1)
-                    }
+                    Button("Skip for Now") { move(1) }
+                        .help("You can download a translator later in Models.")
                 }
             case .permission:
-                Button(hasPermission ? "Continue" : "Later") { move(1) }
-                    .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.defaultAction)
+                // While asking, the page's own Allow button is the prominent one.
+                if hasPermission {
+                    Button("Continue") { move(1) }
+                        .buttonStyle(.borderedProminent)
+                        .keyboardShortcut(.defaultAction)
+                } else {
+                    Button("Later") { move(1) }
+                }
             case .done:
-                Button("Finish") { onFinish() }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+                Button("Done") { onFinish() }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
             }
         }
     }
@@ -228,22 +327,13 @@ struct WelcomeView: View {
         }
     }
 
-    private func feature(_ icon: String, _ title: String, _ detail: String) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: icon)
-                .font(.title3)
-                .foregroundStyle(Color.accentColor)
-                .frame(width: 26)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title).font(.headline)
-                Text(detail).foregroundStyle(.secondary)
-            }
-        }
-        .frame(width: 420, alignment: .leading)
-    }
-
     private func move(_ delta: Int) {
         guard var next = Step(rawValue: step.rawValue + delta) else { return }
+        // Transcribing needs no translator.
+        if next == .translation, state.mode == .transcribe {
+            guard let skipped = Step(rawValue: next.rawValue + delta) else { return }
+            next = skipped
+        }
         // Nothing to ask for when the permission is already granted.
         if next == .permission, AudioPermission.status() == .granted {
             flow.permission = .granted

@@ -22,8 +22,9 @@
 
 - **Drafts re-decode the whole utterance** each time. A streaming policy (LocalAgreement)
   would stabilize drafts and save work.
-- **Translation has no context.** MADLAD translates sentence by sentence; names and
-  pronouns aren't kept consistent across lines.
+- **Offline translation has no context.** MADLAD translates sentence by sentence; names
+  and register aren't consistent. The optional cloud engine fixes this for files
+  ([Cloud translation](14-cloud-translation.md)).
 - **Sync needs same-language subtitles.** A file in another language would need
   timing-only alignment.
 - **Confident mistakes** pass the unclear-line filter.
@@ -34,7 +35,6 @@
 
 ## Ideas to explore next
 
-- A cloud "high quality" mode (e.g. an LLM API) for context-aware translation, opt-in.
 - A larger local translator, or a small LLM post-editing MADLAD output with context.
 - Timing-only subtitle alignment for files in another language.
 - Speaker labels (diarization) so two people's lines don't merge.

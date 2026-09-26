@@ -14,6 +14,8 @@ final class SubtitleSearch: ObservableObject {
     @Published private(set) var downloading: String?
     @Published private(set) var message: String?
     @Published private(set) var error: String?
+    /// The file just loaded for Subtitle file mode: the window then offers to start.
+    @Published private(set) var loaded: URL?
 
     var hasAPIKey: Bool { Secrets.openSubtitlesAPIKey != nil }
 
@@ -37,6 +39,7 @@ final class SubtitleSearch: ObservableObject {
         isSearching = true
         error = nil
         message = nil
+        loaded = nil
         Task {
             do {
                 results = try await client.search(request, languages: [language])
@@ -61,7 +64,8 @@ final class SubtitleSearch: ObservableObject {
                 let text = try await client.download(result)
                 let url = try state.loadDownloadedSubtitles(text, named: result.savedFileName)
                 state.mode = .synced
-                message = "Loaded \(url.lastPathComponent). Play the video and press Start."
+                loaded = url
+                message = nil
             } catch {
                 self.error = error.localizedDescription
             }
@@ -74,6 +78,8 @@ final class SubtitleSearch: ObservableObject {
 struct SubtitleSearchView: View {
     @ObservedObject var search: SubtitleSearch
     @ObservedObject var state: AppState
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismissWindow) private var dismissWindow
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -99,9 +105,11 @@ struct SubtitleSearchView: View {
                 .labelsHidden()
                 .frame(width: 130)
                 Button("Search") { search.search() }
-                    .keyboardShortcut(.defaultAction)
+                    // Once a file is loaded, Return means Start Now instead.
+                    .keyboardShortcut(search.loaded == nil ? .defaultAction : nil)
                     .disabled(search.isSearching || search.query.isEmpty)
             }
+            HelpNote("Choose the language the actors speak (Korean for a K-drama), not your subtitle language: Subtitler matches what it hears to these words, then translates them.")
             HStack(spacing: 10) {
                 Toggle("TV episode", isOn: $search.isEpisode)
                 if search.isEpisode {
@@ -133,11 +141,23 @@ struct SubtitleSearchView: View {
                     } else {
                         Button("Use") { search.download(result, into: state) }
                             .disabled(search.downloading != nil || state.isRunning || state.isBusy)
+                            .help("Load these subtitles for Subtitle file mode.")
                     }
                 }
                 .padding(.vertical, 2)
             }
-            .frame(minHeight: 260)
+            .frame(minHeight: 240)
+            .overlay {
+                if search.results.isEmpty, !search.isSearching {
+                    VStack(spacing: 6) {
+                        Image(systemName: "magnifyingglass").font(.title2).foregroundStyle(.tertiary)
+                        Text("Results appear here. Pick one with a release name like your video (WEB-DL, BluRay) for the best timing.")
+                            .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                            .frame(maxWidth: 340)
+                    }
+                }
+            }
+            if let loaded = search.loaded { ready(loaded) }
             if let message = search.message {
                 Label(message, systemImage: "checkmark.circle").font(.callout).foregroundStyle(.secondary)
             }
@@ -147,9 +167,39 @@ struct SubtitleSearchView: View {
             }
         }
         .padding(20)
-        .frame(width: 560, height: 560)
+        .frame(width: 560, height: 600)
         .onAppear {
             if state.sourceLanguage != Languages.auto { search.language = state.sourceLanguage }
         }
+    }
+
+    /// After "Use": the next step is right here, not only in the menu bar panel.
+    private func ready(_ file: URL) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Ready: \(file.lastPathComponent)", systemImage: "checkmark.circle.fill")
+                .font(.headline)
+                .foregroundStyle(.green)
+            HelpNote("Play the video, then press Start Now. Subtitler listens for a clear line of dialogue to find its place, then shows these subtitles translated, on time. You can also start later from \(Image(systemName: "captions.bubble")) in the menu bar.")
+            HStack {
+                Button("Start Now") {
+                    state.start()
+                    backToPanel()
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+                .disabled(state.isRunning || state.isBusy)
+                Button("Back to Subtitler") { backToPanel() }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.green.opacity(0.10)))
+    }
+
+    /// Closes this window and shows the panel, where the session's status and Stop live.
+    private func backToPanel() {
+        dismissWindow(id: "find-subtitles")
+        openWindow(id: "main")
+        NSApp.activate(ignoringOtherApps: true)
     }
 }

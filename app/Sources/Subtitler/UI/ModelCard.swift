@@ -142,7 +142,7 @@ private struct Meter: View {
 
     var body: some View {
         HStack(spacing: 5) {
-            Text(label)
+            Text(label).fixedSize()
             HStack(spacing: 2) {
                 ForEach(1...5, id: \.self) { step in
                     Capsule()

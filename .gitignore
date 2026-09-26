@@ -8,3 +8,7 @@ app/build/
 .env
 .env.*
 !.env.example
+
+# Impeccable review captures (regenerate with --snapshot)
+/.impeccable/review/
+/.impeccable/questions/

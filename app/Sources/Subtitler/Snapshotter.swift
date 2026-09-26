@@ -10,32 +10,78 @@ enum Snapshotter {
     static func run(into directory: String) {
         _ = NSApplication.shared
         // Never the real Keychain: a snapshot must not show whether keys exist.
-        let models = ModelStore(secrets: MemorySecretStore())
+        // A made-up key, so the Cloud section shows its masked "saved" state.
+        let models = ModelStore(secrets: MemorySecretStore(["openrouter": "sk-or-example-0000-1234"]))
         let style = CaptionStyle()
         let state = AppState(models: models, style: style)
         let out = URL(fileURLWithPath: directory, isDirectory: true)
         try? FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
 
         var views: [(String, AnyView, NSSize)] = [
-            ("models", AnyView(ModelsView(store: models)), NSSize(width: 700, height: 1180)),
-            ("panel", AnyView(ControlPanel(state: state, models: models, subtitleJob: SubtitleJob())), NSSize(width: 360, height: 520)),
+            ("models", AnyView(ModelsView(store: models)), NSSize(width: 700, height: 2900)),
+            ("panel", AnyView(ControlPanel(state: state, models: models, subtitleJob: SubtitleJob(), style: style)),
+             NSSize(width: 360, height: 820)),
             ("captions", AnyView(CaptionsView(state: state, style: style)), NSSize(width: 900, height: 700)),
             ("subtitles", AnyView(SubtitleFileView(job: SubtitleJob(), state: state, models: models)), NSSize(width: 520, height: 560)),
             ("overlay", AnyView(SubtitleOverlayView(state: state, style: style).background(Color.gray)), NSSize(width: 1000, height: 320)),
         ]
         for step in WelcomeView.Step.allCases {
             views.append(("welcome-\(step.rawValue)",
-                          AnyView(WelcomeView(store: models, state: state, initialStep: step) {}),
-                          NSSize(width: 640, height: 660)))
+                          AnyView(WelcomeView(store: models, state: state, style: style, initialStep: step) {}),
+                          NSSize(width: 640, height: 680)))
         }
         state.previewLines()
 
+        let startMode = state.mode
         for (name, view, size) in views {
-            for (suffix, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
-                let url = out.appendingPathComponent("\(name)-\(suffix).png")
-                render(view, size: size, appearance: NSAppearance(named: appearance)!, to: url)
-                print(url.path)
+            // The panel once per mode: each shows different settings.
+            let modes: [CaptionMode?] = name == "panel" ? CaptionMode.allCases : [nil]
+            for mode in modes {
+                if let mode { state.mode = mode }
+                let label = mode.map { "\(name)-\($0.rawValue)" } ?? name
+                for (suffix, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+                    let url = out.appendingPathComponent("\(label)-\(suffix).png")
+                    render(view, size: size, appearance: NSAppearance(named: appearance)!, to: url)
+                    print(url.path)
+                }
             }
+        }
+        state.mode = startMode
+
+        // Cloud states: a live-mode warning, a whole-file estimate, and a cached file.
+        let startTranslation = models.selectedTranslation
+        models.selectCloud(.openRouter)
+        state.mode = .translate
+        renderBoth("panel-translate-cloud", AnyView(ControlPanel(state: state, models: models, subtitleJob: SubtitleJob(), style: style)),
+                   NSSize(width: 360, height: 900), into: out)
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("subtitler-snapshot-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let film = folder.appendingPathComponent("Parasite (2019).ko.srt")
+        let cues = (0..<600).map { SubtitleCue(start: Double($0) * 4, end: Double($0) * 4 + 3, text: "대사 \($0 + 1)입니다.") }
+        try? SubtitleFile.srt(cues).write(to: film, atomically: true, encoding: .utf8)
+        state.loadSyncFile(film)
+        state.mode = .synced
+        renderBoth("panel-synced-cloud", AnyView(ControlPanel(state: state, models: models, subtitleJob: SubtitleJob(), style: style)),
+                   NSSize(width: 360, height: 1000), into: out)
+        let job = SubtitleJob()
+        job.load(film)
+        renderBoth("subtitles-cloud", AnyView(SubtitleFileView(job: job, state: state, models: models)),
+                   NSSize(width: 520, height: 600), into: out)
+        let translated = cues.map { SubtitleCue(start: $0.start, end: $0.end, text: "စကား") }
+        try? SubtitleFile.srt(translated).write(to: SubtitleFile.translationURL(for: film, target: state.targetLanguage),
+                                              atomically: true, encoding: .utf8)
+        renderBoth("panel-synced-cached", AnyView(ControlPanel(state: state, models: models, subtitleJob: SubtitleJob(), style: style)),
+                   NSSize(width: 360, height: 1000), into: out)
+        try? FileManager.default.removeItem(at: folder)
+        models.selectedTranslation = startTranslation
+        state.mode = startMode
+    }
+
+    private static func renderBoth(_ name: String, _ view: AnyView, _ size: NSSize, into out: URL) {
+        for (suffix, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+            let url = out.appendingPathComponent("\(name)-\(suffix).png")
+            render(view, size: size, appearance: NSAppearance(named: appearance)!, to: url)
+            print(url.path)
         }
     }
 

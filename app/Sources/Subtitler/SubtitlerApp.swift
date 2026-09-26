@@ -51,19 +51,19 @@ struct SubtitlerApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            ControlPanel(state: state, models: models, subtitleJob: subtitleJob)
+            ControlPanel(state: state, models: models, subtitleJob: subtitleJob, style: style)
         } label: {
             MenuBarIcon(running: state.isRunning, needsSetup: models.needsSetup)
         }
         .menuBarExtraStyle(.window)
 
         Window("Subtitler", id: "main") {
-            ControlPanel(state: state, models: models, subtitleJob: subtitleJob)
+            ControlPanel(state: state, models: models, subtitleJob: subtitleJob, style: style)
         }
         .windowResizability(.contentSize)
 
         Window("Welcome to Subtitler", id: "welcome") {
-            WelcomeWindow(models: models, state: state)
+            WelcomeWindow(models: models, state: state, style: style)
         }
         .windowResizability(.contentSize)
         .windowStyle(.hiddenTitleBar)
@@ -136,7 +136,7 @@ private struct MenuBarIcon: View {
             .accessibilityLabel(running ? "Subtitler, live" : needsSetup ? "Subtitler, needs setup" : "Subtitler")
             .task {
                 WindowRouter.shared.openWindow = openWindow
-                WindowRouter.shared.showAtLaunch(needsSetup ? "welcome" : "main")
+                WindowRouter.shared.showAtLaunch(needsSetup || !WelcomeView.hasSeenTour ? "welcome" : "main")
             }
     }
 }
@@ -144,9 +144,10 @@ private struct MenuBarIcon: View {
 private struct WelcomeWindow: View {
     @ObservedObject var models: ModelStore
     @ObservedObject var state: AppState
+    @ObservedObject var style: CaptionStyle
     @Environment(\.dismissWindow) private var dismissWindow
 
     var body: some View {
-        WelcomeView(store: models, state: state) { dismissWindow(id: "welcome") }
+        WelcomeView(store: models, state: state, style: style) { dismissWindow(id: "welcome") }
     }
 }

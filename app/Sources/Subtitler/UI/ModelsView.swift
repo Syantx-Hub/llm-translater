@@ -10,24 +10,25 @@ struct ModelsView: View {
                 header
                 section(
                     title: "Speech recognition",
-                    caption: "Turns what you hear into text. Bigger models understand accents and noise better.",
+                    caption: "Turns what you hear into text. Needed for every mode. Bigger models understand accents and background music better; Recommended fits this Mac.",
                     models: ModelCatalog.speech)
                 section(
-                    title: "Translation",
-                    caption: "Turns that text into your subtitle language.",
+                    title: "Translation (offline)",
+                    caption: "Turns that text into your subtitle language, on this Mac. Needed for Translate and Subtitle file modes.",
                     models: ModelCatalog.translation)
+                CloudSection(store: store)
                 translationFallback
             }
             .padding(24)
         }
         .frame(minWidth: 620, idealWidth: 700, minHeight: 520, idealHeight: 760)
-        .onAppear { store.refresh() }
+        .onAppear { store.refresh(); store.refreshCloud() }
     }
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Models").font(.largeTitle.weight(.semibold))
-            Text("Everything runs on this Mac — nothing you watch leaves it. Download what you need and switch any time.")
+            Text("Offline models run on this Mac, so nothing you watch leaves it. Download what you need and switch any time; stop subtitles first to switch. Cloud translation, below, is optional.")
                 .foregroundStyle(.secondary)
             HStack(spacing: 14) {
                 Label("\(Hardware.chipName) · \(Hardware.ramGB) GB", systemImage: "cpu")

@@ -51,6 +51,7 @@ Start at the top; each page builds on the ones before it.
 11. [Models and downloads](11-models-and-downloads.md).
 12. [Build, test and debug](12-build-test-debug.md).
 13. [Lessons and next steps](13-lessons-and-next-steps.md): what went wrong, what's next.
+14. [Cloud translation](14-cloud-translation.md): LLM translation with your own key, prompting, batching, and keeping keys safe.
 
 ## Glossary
 
