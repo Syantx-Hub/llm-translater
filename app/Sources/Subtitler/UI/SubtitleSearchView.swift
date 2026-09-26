@@ -96,7 +96,7 @@ struct SubtitleSearchView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             HStack {
-                TextField("Film or show title — or \"breaking bad s01e01\"", text: $search.query)
+                TextField("Film or show title, or \"breaking bad s01e01\"", text: $search.query)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit { search.search() }
                 Picker("", selection: $search.language) {

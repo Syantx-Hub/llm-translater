@@ -20,7 +20,7 @@ struct CaptionsView: View {
                 Toggle("Preview on screen", isOn: $state.previewOnScreen)
                     .disabled(state.isRunning || state.isBusy)
                 Text(state.isRunning
-                     ? "Subtitles are live — changes apply to them right away."
+                     ? "Subtitles are live: changes apply to them right away."
                      : "Shows sample captions over your screen so you can fine-tune position and size.")
                     .font(.caption)
                     .foregroundStyle(.secondary)

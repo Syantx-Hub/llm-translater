@@ -192,8 +192,8 @@ struct WelcomeView: View {
                 .foregroundStyle(hasPermission ? Color.green : Color.accentColor)
             Text("Let Subtitler hear your Mac").font(.title2.weight(.semibold))
             Text(AudioCaptureFactory.usesScreenRecording
-                 ? "On this version of macOS, apps hear system audio through the Screen Recording permission. Subtitler only uses the audio — it never looks at your screen."
-                 : "Subtitler needs the System Audio Recording permission. It only hears what your Mac plays — it never sees your screen, and audio is never stored or sent anywhere.")
+                 ? "On this version of macOS, apps hear system audio through the Screen Recording permission. Subtitler only uses the audio; it never looks at your screen."
+                 : "Subtitler needs the System Audio Recording permission. It only hears what your Mac plays; it never sees your screen, and audio is never stored or sent anywhere.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: 460)

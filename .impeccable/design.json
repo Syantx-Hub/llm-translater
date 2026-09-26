@@ -1,0 +1,150 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-26T00:00:00Z",
+  "title": "Design System: Subtitler",
+  "extensions": {
+    "colorMeta": {
+      "accent": { "role": "primary", "displayName": "System Accent", "canonical": "Color.accentColor (user's macOS accent)", "tonalRamp": ["color-mix(in oklch, AccentColor 25%, black)", "color-mix(in oklch, AccentColor 45%, black)", "color-mix(in oklch, AccentColor 70%, black)", "AccentColor", "color-mix(in oklch, AccentColor 75%, white)", "color-mix(in oklch, AccentColor 50%, white)", "color-mix(in oklch, AccentColor 25%, white)", "color-mix(in oklch, AccentColor 10%, white)"] },
+      "link": { "role": "secondary", "displayName": "System Link", "canonical": "NSColor.linkColor via .buttonStyle(.link)", "tonalRamp": ["color-mix(in oklch, LinkText 25%, black)", "color-mix(in oklch, LinkText 45%, black)", "color-mix(in oklch, LinkText 70%, black)", "LinkText", "color-mix(in oklch, LinkText 75%, white)", "color-mix(in oklch, LinkText 50%, white)", "color-mix(in oklch, LinkText 25%, white)", "color-mix(in oklch, LinkText 10%, white)"] },
+      "label": { "role": "neutral", "displayName": "Label", "canonical": "Color.primary / NSColor.labelColor" },
+      "secondary-label": { "role": "neutral", "displayName": "Secondary Label", "canonical": ".secondary / NSColor.secondaryLabelColor" },
+      "control-background": { "role": "neutral", "displayName": "Control Background", "canonical": "NSColor.controlBackgroundColor", "tonalRamp": ["oklch(15% 0 0)", "oklch(25% 0 0)", "oklch(35% 0 0)", "oklch(50% 0 0)", "oklch(65% 0 0)", "oklch(80% 0 0)", "oklch(90% 0 0)", "oklch(97% 0 0)"] },
+      "window-background": { "role": "neutral", "displayName": "Window Background", "canonical": "NSColor.windowBackgroundColor" },
+      "hairline": { "role": "neutral", "displayName": "Hairline", "canonical": "Color.primary.opacity(0.08)" },
+      "caution-orange": { "role": "tertiary", "displayName": "Caution Orange", "canonical": "Color.orange (systemOrange)", "tonalRamp": ["oklch(25% 0.08 60)", "oklch(35% 0.11 60)", "oklch(48% 0.14 60)", "oklch(62% 0.17 60)", "oklch(77% 0.17 65)", "oklch(84% 0.12 65)", "oklch(91% 0.07 65)", "oklch(96% 0.03 65)"] },
+      "done-green": { "role": "tertiary", "displayName": "Done Green", "canonical": "Color.green (systemGreen)", "tonalRamp": ["oklch(25% 0.07 145)", "oklch(35% 0.1 145)", "oklch(48% 0.14 145)", "oklch(62% 0.17 145)", "oklch(75% 0.2 145)", "oklch(84% 0.13 145)", "oklch(91% 0.07 145)", "oklch(96% 0.03 145)"] },
+      "failure-red": { "role": "tertiary", "displayName": "Failure Red", "canonical": "Color.red (systemRed)", "tonalRamp": ["oklch(25% 0.09 27)", "oklch(35% 0.13 27)", "oklch(48% 0.17 27)", "oklch(64% 0.22 27)", "oklch(74% 0.16 27)", "oklch(83% 0.1 27)", "oklch(91% 0.05 27)", "oklch(96% 0.02 27)"] },
+      "scene-top": { "role": "custom", "displayName": "Scene Top", "canonical": "Color(white: 0.16)" },
+      "scene-bottom": { "role": "custom", "displayName": "Scene Bottom", "canonical": "Color(white: 0.07)" },
+      "scene-glow": { "role": "custom", "displayName": "Scene Glow", "canonical": "Color(red: 0.36, green: 0.31, blue: 0.24).opacity(0.55), radial at (0.7, 0.35)" },
+      "caption-text": { "role": "custom", "displayName": "Caption Text", "canonical": "CaptionStyle.textColor default .white (user-controlled)" },
+      "caption-box": { "role": "custom", "displayName": "Caption Box", "canonical": "CaptionStyle.backgroundColor .black at backgroundOpacity 0.62 (user-controlled)" }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Display", "purpose": ".largeTitle semibold: one per window, the window's name." },
+      "headline": { "displayName": "Headline", "purpose": ".title2 semibold: step and window titles." },
+      "title": { "displayName": "Title", "purpose": ".title3 semibold: section heads; mono variant for the latency readout." },
+      "heading": { "displayName": "Heading", "purpose": ".headline: app name in the panel, model names, result titles." },
+      "body": { "displayName": "Body", "purpose": ".body: field labels, toggles, file names." },
+      "body-emphasis": { "displayName": "Body Emphasis", "purpose": ".body medium: mode names in the chooser." },
+      "callout": { "displayName": "Callout", "purpose": ".callout: window subtitles, model summaries, tour step lists." },
+      "footnote": { "displayName": "Footnote", "purpose": ".caption secondary: every HelpNote, NoticeRow, purpose line and link action." },
+      "micro": { "displayName": "Micro", "purpose": ".caption2 semibold/bold tabular: badges, step numbers, timecode chip." },
+      "caption-overlay": { "displayName": "Caption", "purpose": "User-controlled caption font: Noto Sans Myanmar for Burmese on Automatic, 34pt medium default, line spacing 0.35 x size." }
+    },
+    "shadows": [
+      { "name": "preview-lift", "value": "0 3px 12px rgba(0,0,0,0.18)", "purpose": "The caption preview only (SwiftUI shadow black 18%, radius 6, y 3)." },
+      { "name": "caption-edge-shadow", "value": "0 1px 6px rgba(0,0,0,0.85)", "purpose": "Default caption text edge for readability on bright video (radius 3, y 1, scaled)." }
+    ],
+    "motion": [
+      { "name": "disclosure", "value": "ease-out 150ms", "purpose": "LearnMore chevron rotation and content fade; caption slot changes." },
+      { "name": "tour-step", "value": "ease-out 200ms", "purpose": "Welcome tour page changes." },
+      { "name": "demo-word", "value": "260ms per word", "purpose": "Transcribe demo types words into the preview." },
+      { "name": "demo-hold", "value": "2400ms hold, 300ms gap", "purpose": "Each demo line's time on screen. Reduce Motion shows one static line." }
+    ],
+    "breakpoints": []
+  },
+  "components": [
+    {
+      "name": "Prominent Button",
+      "kind": "button",
+      "refersTo": "button-prominent",
+      "description": "The one next step on a surface: Start, Continue, Download, Use for Translation.",
+      "html": "<button class=\"ds-btn-prominent\">Start</button>",
+      "css": ".ds-btn-prominent { font: 400 15px/1 -apple-system, system-ui, sans-serif; background: AccentColor; color: #fff; border: none; border-radius: 7px; padding: 6px 14px; box-shadow: 0 0.5px 1px rgba(0,0,0,0.2); cursor: default; transition: filter 0.1s; } .ds-btn-prominent:hover { filter: brightness(1.05); } .ds-btn-prominent:active { filter: brightness(0.9); } .ds-btn-prominent:focus-visible { outline: 3px solid color-mix(in srgb, AccentColor 50%, transparent); outline-offset: 1px; }"
+    },
+    {
+      "name": "Bordered Button",
+      "kind": "button",
+      "refersTo": "button-bordered",
+      "description": "Secondary actions; titles that open a window end in an ellipsis.",
+      "html": "<button class=\"ds-btn-bordered\">Choose File…</button>",
+      "css": ".ds-btn-bordered { font: 400 13px/1 -apple-system, system-ui, sans-serif; background: #fff; color: rgba(0,0,0,0.85); border: none; border-radius: 6px; padding: 4px 10px; box-shadow: 0 0 0 0.5px rgba(0,0,0,0.15), 0 0.5px 1px rgba(0,0,0,0.15); cursor: default; } .ds-btn-bordered:active { background: #e6e6e6; } .ds-btn-bordered:focus-visible { outline: 3px solid color-mix(in srgb, AccentColor 50%, transparent); outline-offset: 1px; }"
+    },
+    {
+      "name": "Mode Chooser Row",
+      "kind": "custom",
+      "refersTo": "mode-row-selected",
+      "description": "One of the three ways to use Subtitler; selected shows accent tint and checkmark, and replays the preview demo.",
+      "html": "<div class=\"ds-mode\"><button class=\"ds-mode-row ds-mode-on\"><svg class=\"ds-mode-glyph\" width=\"22\" height=\"22\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\"><path d=\"M4 5h16v11H9l-5 4z\"/><path d=\"M9 13l3-7 3 7M10 11h4\" opacity=\"0.6\"/></svg><span class=\"ds-mode-text\"><span class=\"ds-mode-name\">Translate</span><span class=\"ds-mode-purpose\">Translates whatever is playing, as it's said.</span></span><svg class=\"ds-mode-check\" width=\"16\" height=\"16\" viewBox=\"0 0 16 16\"><circle cx=\"8\" cy=\"8\" r=\"8\" fill=\"currentColor\"/><path d=\"M4.5 8.2l2.3 2.3 4.7-4.9\" stroke=\"#fff\" stroke-width=\"1.6\" fill=\"none\"/></svg></button><button class=\"ds-mode-row\"><svg class=\"ds-mode-glyph\" width=\"22\" height=\"22\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\"><path d=\"M4 5h16v11H9l-5 4z\"/><path d=\"M8 9h8M8 12h6\" opacity=\"0.6\"/></svg><span class=\"ds-mode-text\"><span class=\"ds-mode-name\">Transcribe only</span><span class=\"ds-mode-purpose\">Shows the words as they're spoken, in the same language.</span></span><svg class=\"ds-mode-check\" width=\"16\" height=\"16\" viewBox=\"0 0 16 16\"><circle cx=\"8\" cy=\"8\" r=\"7.25\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1\"/></svg></button></div>",
+      "css": ".ds-mode { display: flex; flex-direction: column; gap: 4px; width: 332px; font-family: -apple-system, system-ui, sans-serif; } .ds-mode-row { display: flex; align-items: flex-start; gap: 10px; padding: 8px 10px; border: none; border-radius: 8px; background: transparent; text-align: left; cursor: default; color: rgba(0,0,0,0.5); } .ds-mode-row:hover { background: rgba(0,0,0,0.03); } .ds-mode-on, .ds-mode-on:hover { background: color-mix(in srgb, AccentColor 10%, transparent); color: AccentColor; } .ds-mode-glyph { width: 24px; flex: none; } .ds-mode-text { display: flex; flex-direction: column; gap: 2px; flex: 1; } .ds-mode-name { font: 500 13px/1.3 inherit; color: rgba(0,0,0,0.85); } .ds-mode-purpose { font: 400 10px/1.4 inherit; color: rgba(0,0,0,0.5); } .ds-mode-check { flex: none; } .ds-mode-row:not(.ds-mode-on) .ds-mode-check { opacity: 0.5; }"
+    },
+    {
+      "name": "Field Row with Help Note",
+      "kind": "input",
+      "refersTo": "field-row-label",
+      "description": "Label in the fixed 118pt column, control filling the rest, a one-line secondary footnote under it.",
+      "html": "<div class=\"ds-field\"><div class=\"ds-field-row\"><label class=\"ds-field-label\">Spoken language</label><select class=\"ds-field-popup\"><option>Auto-detect</option><option>Korean</option></select></div><p class=\"ds-help\">Detects the language and follows the video if it changes.</p></div>",
+      "css": ".ds-field { display: flex; flex-direction: column; gap: 4px; width: 332px; font-family: -apple-system, system-ui, sans-serif; } .ds-field-row { display: flex; align-items: center; gap: 8px; } .ds-field-label { width: 118px; flex: none; font-size: 13px; color: rgba(0,0,0,0.85); white-space: nowrap; } .ds-field-popup { flex: 1; font: 13px -apple-system, system-ui; padding: 2px 6px; border-radius: 5px; border: none; background: #fff; box-shadow: 0 0 0 0.5px rgba(0,0,0,0.15), 0 0.5px 1px rgba(0,0,0,0.15); } .ds-field-popup:focus-visible { outline: 3px solid color-mix(in srgb, AccentColor 50%, transparent); } .ds-help { margin: 0; font-size: 10px; line-height: 1.4; color: rgba(0,0,0,0.5); }"
+    },
+    {
+      "name": "Notice Row",
+      "kind": "custom",
+      "refersTo": "notice-row-caution",
+      "description": "Status as a sentence with a symbol: info (secondary), caution (orange glyph, primary text), done (green glyph).",
+      "html": "<div class=\"ds-notices\"><div class=\"ds-notice\"><svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.3\"><path d=\"M5 11a3 3 0 010-6 4 4 0 017.5 1A2.5 2.5 0 0112 11\"/><path d=\"M8 8v6M6 10l2-2 2 2\"/></svg><span>Subtitle text is sent to OpenRouter. Audio never leaves the Mac.</span></div><div class=\"ds-notice ds-notice-caution\"><svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.3\"><path d=\"M8 2l6.5 12h-13z\"/><path d=\"M8 6.5v3.5M8 11.5v.5\"/></svg><span>Each sentence is a separate request: adds network lag.</span></div><div class=\"ds-notice ds-notice-done\"><svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.3\"><circle cx=\"8\" cy=\"8\" r=\"6.5\"/><path d=\"M5 8.2l2 2 4-4.2\"/></svg><span>Cached: watching again sends nothing.</span></div></div>",
+      "css": ".ds-notices { display: flex; flex-direction: column; gap: 6px; width: 332px; font-family: -apple-system, system-ui, sans-serif; } .ds-notice { display: flex; align-items: flex-start; gap: 6px; font-size: 10px; line-height: 1.4; color: rgba(0,0,0,0.5); } .ds-notice svg { flex: none; margin-top: 1px; } .ds-notice-caution { color: rgba(0,0,0,0.85); } .ds-notice-caution svg { color: #ff9500; } .ds-notice-done svg { color: #28cd41; }"
+    },
+    {
+      "name": "Learn More Disclosure",
+      "kind": "custom",
+      "refersTo": "button-link",
+      "description": "Details kept out of the way until asked for; link-style title with a rotating chevron.",
+      "html": "<details class=\"ds-learn\"><summary>How Translate works <svg width=\"8\" height=\"8\" viewBox=\"0 0 8 8\"><path d=\"M2.5 1l3 3-3 3\" stroke=\"currentColor\" fill=\"none\" stroke-width=\"1.3\"/></svg></summary><p>Play the video, then press Start.</p><p>Each sentence appears in your language once it's finished.</p></details>",
+      "css": ".ds-learn { font-family: -apple-system, system-ui, sans-serif; width: 332px; } .ds-learn summary { list-style: none; cursor: default; font: 500 10px/1.4 inherit; color: LinkText; display: inline-flex; align-items: center; gap: 3px; } .ds-learn summary::-webkit-details-marker { display: none; } .ds-learn summary:focus-visible { outline: 2px solid color-mix(in srgb, AccentColor 50%, transparent); border-radius: 3px; } .ds-learn summary svg { transition: transform 0.15s ease-out; } .ds-learn[open] summary svg { transform: rotate(90deg); } .ds-learn p { margin: 4px 0 0; font-size: 10px; line-height: 1.4; color: rgba(0,0,0,0.5); }"
+    },
+    {
+      "name": "Model Card",
+      "kind": "card",
+      "refersTo": "model-card",
+      "description": "One downloadable model: badges, summary, strengths, meters, and a trailing action column.",
+      "html": "<div class=\"ds-card ds-card-on\"><div class=\"ds-card-main\"><div class=\"ds-card-title\">MADLAD-400 3B <span class=\"ds-badge\">Recommended</span></div><p class=\"ds-card-summary\">Google's translation model for 400+ languages, including Burmese.</p><div class=\"ds-card-strength\"><span>✓</span> Runs fully offline on the GPU</div><div class=\"ds-card-stats\">Speed <span class=\"ds-pips\"><i class=\"on\"></i><i class=\"on\"></i><i class=\"on\"></i><i class=\"on\"></i><i></i></span> 1.9 GB · Apache 2.0</div></div><div class=\"ds-card-action\">In use</div></div>",
+      "css": ".ds-card { display: flex; gap: 16px; padding: 16px; width: 520px; border-radius: 12px; background: #fff; box-shadow: inset 0 0 0 1px rgba(0,0,0,0.08); font-family: -apple-system, system-ui, sans-serif; } .ds-card-on { box-shadow: inset 0 0 0 1.5px AccentColor; } .ds-card-main { flex: 1; display: flex; flex-direction: column; gap: 8px; } .ds-card-title { font: 700 13px/1.3 inherit; color: rgba(0,0,0,0.85); display: flex; gap: 6px; align-items: center; } .ds-badge { font: 600 10px/1 inherit; padding: 2px 6px; border-radius: 999px; color: AccentColor; background: color-mix(in srgb, AccentColor 12%, transparent); } .ds-card-summary { margin: 0; font-size: 12px; color: rgba(0,0,0,0.5); } .ds-card-strength { font-size: 10px; color: rgba(0,0,0,0.85); } .ds-card-strength span { color: #28cd41; font-weight: 700; } .ds-card-stats { font-size: 10px; color: rgba(0,0,0,0.5); display: flex; gap: 5px; align-items: center; } .ds-pips { display: inline-flex; gap: 2px; } .ds-pips i { width: 10px; height: 4px; border-radius: 2px; background: rgba(0,0,0,0.15); } .ds-pips i.on { background: AccentColor; } .ds-card-action { width: 118px; text-align: right; font: 500 12px inherit; color: AccentColor; }"
+    },
+    {
+      "name": "Caption Preview",
+      "kind": "custom",
+      "refersTo": "caption-preview",
+      "description": "The one non-system element: a letterboxed dark film frame with the real caption style; replays the chosen mode's demo.",
+      "html": "<div class=\"ds-preview\"><span class=\"ds-preview-chip\">00:12:04</span><span class=\"ds-preview-caption\">တစ်ညလုံး ဘယ်မှာရှိခဲ့လဲ။</span></div>",
+      "css": ".ds-preview { position: relative; width: 332px; height: 118px; border-radius: 8px; overflow: hidden; background: radial-gradient(circle at 70% 35%, rgba(92,79,61,0.55), transparent 45%), linear-gradient(#292929, #121212); box-shadow: inset 0 0 0 1px rgba(0,0,0,0.25), 0 3px 12px rgba(0,0,0,0.18); font-family: -apple-system, system-ui, sans-serif; } .ds-preview-caption { position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%); white-space: nowrap; font: 500 15px/1.35 'Noto Sans Myanmar', system-ui; color: #fff; background: rgba(0,0,0,0.62); padding: 4px 8px; border-radius: 5px; text-shadow: 0 1px 3px rgba(0,0,0,0.85); } .ds-preview-chip { position: absolute; top: 8px; left: 8px; font: 500 10px/1 ui-monospace, -apple-system; color: rgba(255,255,255,0.85); background: rgba(0,0,0,0.45); padding: 3px 6px; border-radius: 999px; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Annotated Control Panel",
+    "overview": "Subtitler looks like something Apple could have shipped: SwiftUI's own controls, the system accent, SF Pro through text styles, SF Symbols, controlBackgroundColor cards on the window background, in light and dark. What sets it apart is not a visual flourish but a habit. Every control carries a one-line secondary-grey footnote saying what it does. Longer detail sits behind a small \"Learn more\" link, and every status is a sentence with a symbol. The whole interface explains itself in the place the user already is.\n\nThe system has one deliberately non-system element: the caption preview. It is a small letterboxed dark frame (a dim film scene) with the real CaptionLayer drawn in it at true screen proportion. It plays a few seconds of what the chosen mode does and replays whenever the mode changes. This is the only place the app draws its own colours. Everything else inherits the Mac.\n\nDensity is compact, like a utility. The 360pt menu bar panel stacks header, preview, the three mode rows, the mode's settings and a \"How this works\" disclosure on 10–14pt rhythm. Windows (Welcome, Models, Captions, Find subtitles, Save a translated copy) open to a semibold title plus one secondary sentence, then content.",
+    "keyCharacteristics": [
+      "Native materials only: system semantic colours, the user's accent, SF Pro text styles, SF Symbols.",
+      "A footnote under each control (HelpNote), details behind a disclosure (LearnMore).",
+      "Status as a sentence with a symbol (NoticeRow), toned calm, orange (costs time or money) or green (done).",
+      "One real caption preview, the only non-system surface, replayed on every mode change.",
+      "Light and dark are both first-class; nothing is hard-coded to one appearance except the caption scene, which is always dark."
+    ],
+    "rules": [
+      { "name": "The Borrowed Palette Rule", "body": "Every colour outside the caption scene is a system semantic colour or the accent. Never hard-code a hex for chrome.", "section": "colors" },
+      { "name": "The Glyph-Only Caution Rule", "body": "A caution tints the symbol orange and keeps the sentence in primary text. Orange paragraphs and red chrome are not used.", "section": "colors" },
+      { "name": "The One Prominent Button Rule", "body": "Each surface has at most one .borderedProminent button, the next step: Start/Stop in the panel, Continue in the tour, Download on a card, Use for Translation, Start Now. When the page itself holds the prominent action (Allow… on the permission step), the footer's button goes plain.", "section": "colors" },
+      { "name": "The Text-Style Rule", "body": "Chrome text uses SwiftUI text styles (.caption, .callout, .headline…), never fixed point sizes, so Dynamic Type sizes carry through.", "section": "typography" },
+      { "name": "The Tabular Numbers Rule", "body": "Every number that changes (latency, timing offset, slider readouts, download percent, key hint, timecode) is .monospacedDigit().", "section": "typography" },
+      { "name": "The Burmese Room Rule", "body": "Captions in Burmese default to Noto Sans Myanmar with line spacing of 0.35 × font size, and the caption box pads vertically by 0.3 × font size, so stacked glyphs never clip.", "section": "typography" },
+      { "name": "The One Lifted Frame Rule", "body": "Only the caption preview casts a shadow. Cards, rows and banners stay flat and are separated by fill and hairline.", "section": "elevation" }
+    ],
+    "dos": [
+      "Do put a one-line HelpNote under every control that isn't self-evident, saying what it does in the viewer's words (\"Skips lines the speech model wasn't sure about, instead of showing misheard words.\").",
+      "Do put longer explanation behind LearnMore, with a title that names the question (\"Why a subtitle file?\", \"How Translate works\").",
+      "Do state status as a sentence with an SF Symbol through NoticeRow, and use the caution tone only for things that cost time, money or capability.",
+      "Do use SF Symbols with hierarchical rendering for lead glyphs (mode rows, capability rows, file and permission glyphs). Inline label icons stay monochrome.",
+      "Do keep panel controls on the 118pt FieldRow label column; use Form with .grouped style where the window is wide enough.",
+      "Do draw captions anywhere in the UI with the real CaptionLayer and the user's CaptionStyle, never a mock-up.",
+      "Do mark selection with accent tint plus a checkmark, and add the .isSelected accessibility trait.",
+      "Do name every privacy consequence plainly beside the choice that causes it (\"Audio never leaves the Mac.\")."
+    ],
+    "donts": [
+      "Don't hard-code chrome colours or fixed point sizes; use system semantic colours, the accent and text styles.",
+      "Don't add a second prominent button to a surface.",
+      "Don't add shadows to cards, rows or banners; the caption preview is the only lifted element.",
+      "Don't introduce a second non-system surface in the panel or tour; the dark caption scene is the one exception, and the Captions window's contrast scene is its purpose-bound sibling.",
+      "Don't replace .link buttons' system link colour with the accent, or restyle native controls."
+    ]
+  }
+}
