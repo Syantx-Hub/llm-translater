@@ -94,7 +94,7 @@ final class CaptionStyle: ObservableObject {
         offset = value("offset") ?? 0.06
         maxWidth = value("maxWidth") ?? 0.84
         lineCount = value("lineCount") ?? 2
-        showOriginal = value("showOriginal") ?? (d.object(forKey: "showOriginal") as? Bool) ?? true
+        showOriginal = value("showOriginal") ?? (d.object(forKey: "showOriginal") as? Bool) ?? false
         originalScale = value("originalScale") ?? 0.5
         showDrafts = value("showDrafts") ?? true
         hideAfter = value("hideAfter") ?? 6

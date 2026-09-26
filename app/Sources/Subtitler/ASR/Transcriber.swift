@@ -47,8 +47,28 @@ actor Transcriber: SpeechTranscribing {
         _ = try? await transcribe(noise, language: "en")
     }
 
+    /// The previous decode; the next one waits for it, so WhisperKit never runs two at once
+    /// (a cancelled decode can still be unwinding when the next request arrives).
+    private var tail: Task<Void, Never>?
+
     /// - Parameter language: Whisper code, or nil to auto-detect.
+    /// Cancelling the calling task stops the decode early.
     func transcribe(_ samples: [Float], language: String?) async throws -> Result? {
+        let previous = tail
+        let work = Task { () async throws -> Result? in
+            await previous?.value
+            try Task.checkCancellation()
+            return try await self.decode(samples, language: language)
+        }
+        tail = Task { _ = try? await work.value }
+        return try await withTaskCancellationHandler {
+            try await work.value
+        } onCancel: {
+            work.cancel()
+        }
+    }
+
+    private func decode(_ samples: [Float], language: String?) async throws -> Result? {
         guard let whisper else { return nil }
         var options = DecodingOptions()
         options.task = .transcribe

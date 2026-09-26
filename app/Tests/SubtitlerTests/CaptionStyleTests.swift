@@ -25,13 +25,13 @@ import Testing
         let defaults = makeDefaults()
         let style = CaptionStyle(defaults: defaults)
         style.fontSize = 60
-        style.showOriginal = false
+        style.showOriginal = true
         style.backgroundOpacity = 0.1
 
         style.reset()
 
         #expect(style.fontSize == 34)
-        #expect(style.showOriginal)
+        #expect(!style.showOriginal)
         #expect(style.backgroundOpacity == 0.62)
         #expect(CaptionStyle(defaults: defaults).fontSize == 34)
     }

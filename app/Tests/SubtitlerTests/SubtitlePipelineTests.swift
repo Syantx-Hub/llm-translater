@@ -25,7 +25,7 @@ import Testing
         let translator = FakeTranslator()
         let (pipeline, updates) = pipeline(transcriber: transcriber, translator: translator)
 
-        await pipeline.submit(.partial(samples(1000)))
+        await pipeline.submit(.partial(samples(1000), isPause: true))
         await pipeline.flush()
         await pipeline.submit(.final(samples(1500), trailingSilence: 600))
         await pipeline.flush()
@@ -35,11 +35,26 @@ import Testing
         #expect(lines(updates).map(\.translation) == ["[my] Hello there."])
     }
 
+    /// The usual live timing: the final arrives while the pause draft is still decoding.
+    @Test func finalReusesAPauseDraftThatWasStillDecoding() async {
+        let transcriber = FakeTranscriber(script: [1000: "Hello there."], delay: .milliseconds(200))
+        let translator = FakeTranslator()
+        let (pipeline, updates) = pipeline(transcriber: transcriber, translator: translator)
+
+        await pipeline.submit(.partial(samples(1000), isPause: true))
+        try? await Task.sleep(for: .milliseconds(50))
+        await pipeline.submit(.final(samples(1500), trailingSilence: 600))
+        await pipeline.flush()
+
+        #expect(await transcriber.calls == [1000])
+        #expect(lines(updates).map(\.original) == ["Hello there."])
+    }
+
     @Test func finalDecodesAgainWhenNewSpeechFollowedTheDraft() async {
         let transcriber = FakeTranscriber(script: [1000: "Hello", 5000: "Hello there, friend."])
         let (pipeline, updates) = pipeline(transcriber: transcriber)
 
-        await pipeline.submit(.partial(samples(1000)))
+        await pipeline.submit(.partial(samples(1000), isPause: true))
         await pipeline.flush()
         await pipeline.submit(.final(samples(5000), trailingSilence: 600))
         await pipeline.flush()
@@ -123,7 +138,7 @@ import Testing
         let transcriber = FakeTranscriber(script: [1000: "Where have you"])
         let (pipeline, updates) = pipeline(transcriber: transcriber)
 
-        await pipeline.submit(.partial(samples(1000)))
+        await pipeline.submit(.partial(samples(1000), isPause: true))
         await pipeline.flush()
 
         #expect(updates.values.contains(.draft(DraftCaption(text: "[my] Where have you", isTranslation: true))))
@@ -157,7 +172,7 @@ import Testing
         let transcriber = FakeTranscriber(script: [500: "short"], language: "ja")
         let (pipeline, updates) = pipeline(transcriber: transcriber, source: nil)
 
-        await pipeline.submit(.partial(samples(500)))
+        await pipeline.submit(.partial(samples(500), isPause: false))
         await pipeline.flush()
 
         #expect(!updates.values.contains { if case .detectedLanguage = $0 { true } else { false } })

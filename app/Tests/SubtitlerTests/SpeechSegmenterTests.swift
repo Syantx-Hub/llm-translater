@@ -20,7 +20,7 @@ import Testing
     }
 
     private func partials(_ events: [SpeechSegmenter.Event]) -> [[Float]] {
-        events.compactMap { if case .partial(let s) = $0 { s } else { nil } }
+        events.compactMap { if case .partial(let s, _) = $0 { s } else { nil } }
     }
 
     @Test func silenceProducesNothing() {

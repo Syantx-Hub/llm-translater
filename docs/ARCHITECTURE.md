@@ -238,7 +238,8 @@ they exist and reports `.unknown` otherwise. On the ScreenCaptureKit path it use
 `SpeechSegmenter` turns the continuous stream into **utterances** and emits two kinds of
 event:
 
-- `.partial(samples)` is the utterance so far, used for drafts.
+- `.partial(samples, isPause:)` is the utterance so far, used for drafts. `isPause` marks
+  the draft sent the moment the speaker pauses.
 - `.final(samples, trailingSilence:)` is the finished utterance, plus how many samples of
   silence it ends with.
 
@@ -316,7 +317,12 @@ catalog marks that model as Recommended.
 
 - **Finals always run, in order.** Drafts run only when no final is waiting, and only the
   newest draft is kept. On a slow Mac this means fewer drafts, not growing lag.
-- **Speech recognition is serial:** one `drain()` loop feeds the transcriber.
+- **Speech recognition is serial:** one `drain()` loop feeds the transcriber, and
+  `Transcriber` itself queues calls, so WhisperKit never runs two decodes at once.
+- **Pause drafts win.** When the speaker pauses, any draft still decoding is cancelled,
+  because a new pause means it is stale. A final cancels a regular draft but lets a pause
+  draft finish, because the final will reuse it. Whisper's encoder can't be interrupted
+  midway, so a cancel saves the decoder time, not the whole decode.
 - **Translation of finals is a chain of tasks.** Each task waits for the previous one, so
   lines always appear in speech order even when translations finish out of order. While
   one line is being translated, the next line is already being transcribed.
@@ -340,6 +346,10 @@ sequenceDiagram
     Note over P: the final's new audio is only silence,<br/>so reuse the draft's text and translation
     P-->>P: emit line immediately
 ```
+
+A pause draft that finishes *after* the final arrived is still recorded (it just isn't
+shown); this is the common case, because the final comes 240–580 ms after the pause and a
+decode takes about a second.
 
 In `finalize`, if the final contains no new audio beyond the last draft except its trailing
 silence (`final.count - draft.count <= trailingSilence`), the draft already heard every
@@ -630,6 +640,7 @@ All are flags on the app binary (`app/build/Subtitler.app/Contents/MacOS/Subtitl
 |---|---|
 | `--file AUDIO` | Runs a file through the same segmenter → pipeline → translator and prints drafts, lines and lag. `--realtime` feeds audio at playback speed. Missing models are downloaded first. Needs no permission. |
 | `--audio-probe` | Prints the audio permission status; if granted, captures 3 s and prints the level. Never triggers a prompt. |
+| `SUBTITLER_TRACE=1` | Environment variable: prints pipeline timings to stderr (each decode, whether a final reused its draft, queue waits). Works with `--file` and the app. |
 | `--snapshot DIR` | Renders every window and the overlay to PNGs in light and dark mode, offscreen, without Screen Recording. |
 
 `python/eval.py` is the offline evaluation tool from the feasibility stage. It runs a media
@@ -670,7 +681,7 @@ Notes:
 ## 15. Tests
 
 ```sh
-cd app && swift test                              # 57 tests, ~1–2 s
+cd app && swift test                              # 58 tests, ~1–2 s
 SUBTITLER_E2E=1 swift test --filter endToEnd      # real models, slow
 python3 -m unittest discover -s python/tests      # sidecar protocol
 ```

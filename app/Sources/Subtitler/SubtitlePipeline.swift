@@ -1,5 +1,18 @@
 import Foundation
 
+/// `SUBTITLER_TRACE=1` prints pipeline timings to stderr, for latency work.
+enum Trace {
+    static let enabled = ProcessInfo.processInfo.environment["SUBTITLER_TRACE"] == "1"
+    private static let start = Date()
+
+    static func log(_ message: @autoclosure () -> String) {
+        guard enabled else { return }
+        fputs(String(format: "[trace %6.2f] ", Date().timeIntervalSince(start)) + message() + "\n", stderr)
+    }
+
+    static func seconds(_ samples: Int) -> String { String(format: "%.1fs", Double(samples) / 16_000) }
+}
+
 /// Turns speech segments into subtitle updates: ASR one segment at a time, then
 /// translation in a separate ordered chain so the next segment's ASR can run meanwhile.
 ///
@@ -36,7 +49,10 @@ actor SubtitlePipeline {
     /// nil until auto-detection settles on the language of the first line.
     private var source: String?
     private var finals: [Final] = []
-    private var latestDraft: [Float]?
+    private var latestDraft: (samples: [Float], isPause: Bool)?
+    /// The draft being decoded. A regular draft is cancelled when the speaker pauses or the
+    /// utterance ends, so the pause draft (whose result a final can reuse) runs right away.
+    private var decodingDraft: (isPause: Bool, task: Task<Transcript?, Never>)?
     private var draining = false
     private var context: [String] = []
     private var translationChain: Task<Void, Never>?
@@ -66,6 +82,7 @@ actor SubtitlePipeline {
         cancelled = true
         finals.removeAll()
         latestDraft = nil
+        decodingDraft?.task.cancel()
         pendingDraftText = nil
         draftTranslation?.task.cancel()
         draftTranslation = nil
@@ -83,8 +100,12 @@ actor SubtitlePipeline {
         case .final(let samples, let trailingSilence):
             finals.append(Final(samples: samples, trailingSilence: trailingSilence, endedAt: Date()))
             latestDraft = nil
-        case .partial(let samples):
-            latestDraft = samples
+            cancelRegularDraft()
+        case .partial(let samples, let isPause):
+            latestDraft = (samples, isPause)
+            // A new pause means speech resumed since any draft now decoding, so that draft
+            // is stale; free Whisper for this one.
+            if isPause { decodingDraft?.task.cancel() }
         }
         guard !draining else { return }
         draining = true
@@ -104,9 +125,9 @@ actor SubtitlePipeline {
         while !cancelled {
             if !finals.isEmpty {
                 await finalize(finals.removeFirst())
-            } else if let samples = latestDraft {
+            } else if let next = latestDraft {
                 latestDraft = nil
-                await draft(samples)
+                await draft(next.samples, isPause: next.isPause)
             } else {
                 break
             }
@@ -127,13 +148,25 @@ actor SubtitlePipeline {
 
     // MARK: Drafts
 
-    private func draft(_ samples: [Float]) async {
+    private func cancelRegularDraft() {
+        if let decoding = decodingDraft, !decoding.isPause { decoding.task.cancel() }
+    }
+
+    private func draft(_ samples: [Float], isPause: Bool) async {
         let generation = utterance
-        guard let result = try? await transcriber.transcribe(samples, language: source) else { return }
-        // A final that arrived while decoding supersedes this draft.
-        guard finals.isEmpty, generation == utterance, !cancelled else { return }
-        // Language is only locked from finals: a half-second draft is too short to trust.
+        let t0 = Date()
+        let task = Task { [transcriber, source] in try? await transcriber.transcribe(samples, language: source) }
+        decodingDraft = (isPause, task)
+        let result = await task.value
+        decodingDraft = nil
+        Trace.log("\(isPause ? "pause" : "draft") asr \(Trace.seconds(samples.count)) audio in \(String(format: "%.2f", Date().timeIntervalSince(t0)))s\(task.isCancelled ? " (cancelled)" : "")")
+        guard let result, !task.isCancelled, generation == utterance, !cancelled else { return }
+        // Remember it even if the final already arrived: when the final adds nothing but
+        // silence, it reuses this text instead of decoding again.
         lastDraft = (samples.count, result.text)
+        // A waiting final supersedes this draft on screen.
+        guard finals.isEmpty else { return }
+        // Language is only locked from finals: a half-second draft is too short to trust.
         guard translateDrafts, sourceNeedsTranslation else {
             emit(.draft(DraftCaption(text: result.text, isTranslation: false)))
             return
@@ -150,7 +183,10 @@ actor SubtitlePipeline {
         pendingDraftText = nil
         let generation = utterance
         let task = Task { [translator, context] in
-            try? await Self.translate(text, from: from, to: target, context: context, with: translator)
+            let t0 = Date()
+            let result = try? await Self.translate(text, from: from, to: target, context: context, with: translator)
+            Trace.log("draft mt \(String(format: "%.2f", Date().timeIntervalSince(t0)))s")
+            return result
         }
         draftTranslation = (text, task)
         Task {
@@ -180,12 +216,14 @@ actor SubtitlePipeline {
         }
         let inFlight = draftTranslation
         let finished = translatedDraft
+        let lastDraftCount = lastDraft?.count
         utterance += 1
         lastDraft = nil
         pendingDraftText = nil
         draftTranslation = nil
         translatedDraft = nil
 
+        Trace.log("final \(Trace.seconds(final.samples.count)) waited \(String(format: "%.2f", Date().timeIntervalSince(final.endedAt)))s in queue; reuse \(reusableText != nil && source != nil ? "hit" : "miss") (draft covers \(lastDraftCount.map(Trace.seconds) ?? "-"), mt \(finished != nil ? "done" : inFlight != nil ? "running" : "none"))")
         let text: String
         if let reusableText, source != nil {
             text = reusableText

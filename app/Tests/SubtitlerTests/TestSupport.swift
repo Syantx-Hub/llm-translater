@@ -35,15 +35,18 @@ final class Recorder<Value>: @unchecked Sendable {
 actor FakeTranscriber: SpeechTranscribing {
     private let script: [Int: String]
     private let language: String
+    private let delay: Duration?
     private(set) var calls: [Int] = []
 
-    init(script: [Int: String], language: String = "en") {
+    init(script: [Int: String], language: String = "en", delay: Duration? = nil) {
         self.script = script
         self.language = language
+        self.delay = delay
     }
 
     func transcribe(_ samples: [Float], language requested: String?) async throws -> Transcript? {
         calls.append(samples.count)
+        if let delay { try await Task.sleep(for: delay) }
         guard let text = script[samples.count] else { return nil }
         return Transcript(text: text, language: requested ?? language)
     }

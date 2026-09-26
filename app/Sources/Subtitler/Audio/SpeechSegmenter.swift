@@ -9,7 +9,8 @@ import Foundation
 /// Not thread-safe: call `append` from one queue.
 final class SpeechSegmenter {
     enum Event {
-        case partial([Float])
+        /// `isPause`: sent the moment the speaker pauses, covering everything said so far.
+        case partial([Float], isPause: Bool)
         /// `trailingSilence`: samples of silence at the end. A draft of the first
         /// `count - trailingSilence` samples already heard every word.
         case final([Float], trailingSilence: Int)
@@ -115,12 +116,12 @@ final class SpeechSegmenter {
             // Draft right as the speaker pauses: if the pause turns into the end of the
             // utterance, the pipeline reuses this draft instead of decoding again.
             samplesSincePartial = 0
-            onEvent?(.partial(utterance))
+            onEvent?(.partial(utterance, isPause: true))
         } else if Double(utterance.count) >= maxSeconds * Double(sampleRate) {
             splitAtQuietestFrame()
         } else if samplesSincePartial >= partialEverySamples, speechFrames >= minSpeechFrames {
             samplesSincePartial = 0
-            onEvent?(.partial(utterance))
+            onEvent?(.partial(utterance, isPause: false))
         }
     }
 
