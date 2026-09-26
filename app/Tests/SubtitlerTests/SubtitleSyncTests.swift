@@ -236,7 +236,28 @@ import Testing
         let burmese = [SubtitleCue(start: 1, end: 2, text: "မင်္ဂလာပါ"), SubtitleCue(start: 3, end: 4, text: "တာ့တာ")]
         try SubtitleFile.srt(burmese).write(to: folder.appendingPathComponent("Movie.my.srt"), atomically: true, encoding: .utf8)
 
-        #expect(SyncTranslations.existingTranslations(for: english, cues: cues, target: "my") == [0: "မင်္ဂလာပါ", 1: "တာ့တာ"])
-        #expect(SyncTranslations.existingTranslations(for: english, cues: cues, target: "th").isEmpty)
+        let sentences = SubtitleSentences(cues: cues)
+        #expect(SyncTranslations.existingTranslations(for: english, cues: cues, sentences: sentences, target: "my")
+                == [0: "မင်္ဂလာပါ", 1: "တာ့တာ"])
+        #expect(SyncTranslations.existingTranslations(for: english, cues: cues, sentences: sentences, target: "th").isEmpty)
+    }
+
+    @Test func reusesACopyThatJoinedSplitSentences() throws {
+        let folder = try makeTemporaryDirectory()
+        let english = folder.appendingPathComponent("Movie.en.srt")
+        let cues = [SubtitleCue(start: 1, end: 2, text: "I told you"), SubtitleCue(start: 2.1, end: 3, text: "not to go."),
+                    SubtitleCue(start: 4, end: 5, text: "Why?")]
+        try SubtitleFile.srt(cues).write(to: english, atomically: true, encoding: .utf8)
+        let burmese = [SubtitleCue(start: 1, end: 3, text: "မသွားနဲ့လို့ ပြောခဲ့တယ်။"), SubtitleCue(start: 4, end: 5, text: "ဘာလို့လဲ။")]
+        let copy = folder.appendingPathComponent("Movie.my.srt")
+        try SubtitleFile.srt(burmese).write(to: copy, atomically: true, encoding: .utf8)
+        let sentences = SubtitleSentences(cues: cues)
+        #expect(sentences.groups == [[0, 1], [2]])
+        #expect(SyncTranslations.existingTranslations(for: english, cues: cues, sentences: sentences, target: "my")
+                == [0: "မသွားနဲ့လို့ ပြောခဲ့တယ်။", 1: "ဘာလို့လဲ။"])
+
+        // A different file with the same name (other timings) isn't used.
+        try SubtitleFile.srt([SubtitleCue(start: 7, end: 8, text: "x")]).write(to: copy, atomically: true, encoding: .utf8)
+        #expect(SyncTranslations.existingTranslations(for: english, cues: cues, sentences: sentences, target: "my").isEmpty)
     }
 }

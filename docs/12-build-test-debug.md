@@ -23,7 +23,7 @@ Gotchas that cost time:
 ## Test
 
 ```sh
-cd app && swift test                              # 111 tests, a few seconds
+cd app && swift test                              # 120 tests, a few seconds
 SUBTITLER_E2E=1 swift test --filter endToEnd      # real models, slow
 python3 -m unittest discover -s python/tests      # sidecar protocol (6 tests)
 ```

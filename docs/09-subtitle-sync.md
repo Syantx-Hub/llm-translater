@@ -59,12 +59,35 @@ flowchart LR
    as the clock moves (the lines at a new position first after a jump). If `Movie.my.srt`
    exists next to `Movie.en.srt` with the same cues, it's used and nothing is translated
    live. A line whose translation isn't ready isn't shown in the original language.
-9. **File language** is detected with Apple's NaturalLanguage (`NLLanguageRecognizer`) from
+9. **Whole sentences** (`SubtitleSentences`): files often split one sentence over cues
+   ("I told you" / "not to go there."). Translated separately, each half becomes a
+   sentence of its own, and in verb-final Burmese the halves can't be glued back. So
+   consecutive cues are joined while the first doesn't end a sentence (no `. ! ? 。`, or
+   an ellipsis followed by "…" or a lowercase word), the gap is ≤ 1.5 s, neither is
+   dialogue (`- `), and at most 3 cues. The group is translated once and shown for all
+   its cues. Files with almost no sentence punctuation (common in Korean) aren't joined.
+10. **Timing offset**: a −2…+2 s control in the panel nudges the clock live, for files
+    whose cue ends are padded or players with audio delay.
+11. **File language** is detected with Apple's NaturalLanguage (`NLLanguageRecognizer`) from
    the first 200 cues, and the recognizer listens in that language.
 
 **Limit:** the file must be in the *spoken* language (Korean subtitles for a Korean drama)
 for text matching. Aligning a file in another language would need timing-only alignment
 (speech activity vs cue times), which isn't implemented.
+
+### Measured accuracy
+
+`--file clip.wav --realtime --sync clip.srt` plays a clip with known cue times and prints
+the clock error. On a TTS clip (8 lines, M2, Whisper fast):
+
+| Cue ends | Clock error |
+|---|---|
+| exactly at the end of speech | +0.02 to +0.05 s |
+| 0.5 s after the end of speech (typical padding) | −0.47 s (subtitles slightly early) |
+
+The first run showed the clock drifting 0.15 s later per line. That was the harness,
+not the sync: sleeping 100 ms per chunk runs slower than real time. It now paces on an
+absolute schedule. A good lesson: check the measuring tool before trusting the measurement.
 
 ## Try it
 

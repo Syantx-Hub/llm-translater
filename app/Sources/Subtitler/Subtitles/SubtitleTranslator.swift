@@ -10,17 +10,21 @@ enum SubtitleTranslator {
         let secondsLeft: TimeInterval?
     }
 
-    /// Translates every cue's text; timing is kept as is. Identical lines ("Yes.", "What?")
-    /// are translated once. Cancelling the calling task stops early with CancellationError.
+    /// Translates the file sentence by sentence: cues that split one sentence are joined
+    /// (`SubtitleSentences`) and become one cue spanning them, so the translation reads as
+    /// a whole sentence. Other cues keep their timing. Identical lines ("Yes.", "What?") are
+    /// translated once. Cancelling the calling task stops early with CancellationError.
     static func translate(_ cues: [SubtitleCue], from source: String, to target: String, with translator: Translator,
                           progress: @Sendable (Progress) -> Void) async throws -> [SubtitleCue] {
+        let sentences = SubtitleSentences(cues: cues)
         var translated: [SubtitleCue] = []
         var cache: [String: String] = [:]
         let started = Date()
-        for (index, cue) in cues.enumerated() {
+        for (group, members) in sentences.groups.enumerated() {
             try Task.checkCancellation()
-            let text = SubtitleFile.plainText(cue.text)
-            var output = cue
+            let text = sentences.text(of: group, in: cues)
+            var output = SubtitleCue(start: cues[members.first!].start, end: cues[members.last!].end, text: text)
+            if members.count == 1, text.isEmpty { output.text = cues[members[0]].text }
             if !text.isEmpty {
                 if let cached = cache[text] {
                     output.text = cached
@@ -30,10 +34,11 @@ enum SubtitleTranslator {
                 }
             }
             translated.append(output)
-            let done = index + 1
+            let done = group + 1
+            let total = sentences.groups.count
             let elapsed = Date().timeIntervalSince(started)
-            progress(Progress(done: done, total: cues.count,
-                              secondsLeft: done >= 5 ? elapsed / Double(done) * Double(cues.count - done) : nil))
+            progress(Progress(done: done, total: total,
+                              secondsLeft: done >= 5 ? elapsed / Double(done) * Double(total - done) : nil))
         }
         return translated
     }

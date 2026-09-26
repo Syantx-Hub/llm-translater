@@ -12,8 +12,9 @@ WebVTT (`.vtt`): a `WEBVTT` header, `.` for milliseconds, optional cue IDs and s
 malformed blocks skipped. It writes SubRip.
 
 **Save Translated Copy…** (Subtitle file mode): `SubtitleTranslator` translates each cue's
-plain text (tags like `<i>`, `{\an8}` and line breaks removed) sentence by sentence,
-keeping the timing. Repeated lines ("Yes.") are translated once. The output is
+plain text (tags like `<i>`, `{\an8}` and line breaks removed) sentence by sentence.
+Cues that split one sentence are joined (see [Subtitle sync](09-subtitle-sync.md)) and
+written as one cue spanning them; other cues keep their timing. Repeated lines ("Yes.") are translated once. The output is
 `Movie.en.srt` → `Movie.my.srt` next to the original, which players load automatically;
 nothing is overwritten (`Movie.my 2.srt`). ~0.5 s per line on an M2, so a 1,000-line film
 takes 8–10 min. Disabled during a live session (both would load the ~2 GB model).

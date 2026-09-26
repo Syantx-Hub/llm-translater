@@ -93,6 +93,20 @@ import Testing
         #expect(progress.values == [1, 2, 3])
     }
 
+    @Test func joinsASentenceSplitOverCuesIntoOneCue() async throws {
+        let cues = [
+            SubtitleCue(start: 1, end: 2, text: "I told you"),
+            SubtitleCue(start: 2.2, end: 3.5, text: "not to go there."),
+            SubtitleCue(start: 4, end: 5, text: "Why?"),
+        ]
+        let translator = FakeTranslator()
+        let result = try await SubtitleTranslator.translate(cues, from: "en", to: "my", with: translator) { _ in }
+        #expect(result == [
+            SubtitleCue(start: 1, end: 3.5, text: "[my] I told you not to go there."),
+            SubtitleCue(start: 4, end: 5, text: "[my] Why?"),
+        ])
+    }
+
     @Test func stopsWhenCancelled() async {
         let cues = (0..<50).map { SubtitleCue(start: Double($0), end: Double($0) + 1, text: "Line \($0).") }
         let translator = FakeTranslator(delays: Dictionary(uniqueKeysWithValues: cues.map { ($0.text, .milliseconds(20)) }))
@@ -101,5 +115,45 @@ import Testing
         task.cancel()
         await #expect(throws: CancellationError.self) { _ = try await task.value }
         #expect(await translator.calls.count < 50)
+    }
+}
+
+@Suite struct SubtitleSentencesTests {
+    private func groups(_ lines: [(Double, Double, String)]) -> [[Int]] {
+        SubtitleSentences(cues: lines.map { SubtitleCue(start: $0.0, end: $0.1, text: $0.2) }).groups
+    }
+
+    @Test func joinsCuesUntilTheSentenceEnds() {
+        #expect(groups([(0, 1, "When I got home,"), (1.2, 2, "the door was open"), (2.1, 3, "and nobody was there."),
+                        (3.5, 4, "Hello?")]) == [[0, 1, 2], [3]])
+    }
+
+    @Test func keepsFinishedSentencesApart() {
+        #expect(groups([(0, 1, "Where were you?"), (1.1, 2, "Home."), (2.1, 3, "\"Go.\""), (3.1, 4, "Okay.")])
+                == [[0], [1], [2], [3]])
+    }
+
+    @Test func aLongPauseEndsTheSentence() {
+        #expect(groups([(0, 1, "I think"), (4, 5, "we should go."), (5.1, 6, "Now.")]) == [[0], [1], [2]])
+    }
+
+    @Test func anEllipsisContinuesOnlyIntoAContinuation() {
+        #expect(groups([(0, 1, "I thought..."), (1.1, 2, "...you had left."), (2.1, 3, "Wait…"), (3.1, 4, "Who's there?")])
+                == [[0, 1], [2], [3]])
+    }
+
+    @Test func dialogueDashesAreDifferentSpeakers() {
+        #expect(groups([(0, 1, "- Where are you going"), (1.1, 2, "- Home."), (2.1, 3, "You should")
+                        , (3.1, 4, "- Stop.")]) == [[0], [1], [2], [3]])
+    }
+
+    @Test func atMostThreeCuesPerSentence() {
+        #expect(groups([(0, 1, "one"), (1, 2, "two"), (2, 3, "three"), (3, 4, "four."), (4, 5, "Five.")])
+                == [[0, 1, 2], [3], [4]])
+    }
+
+    @Test func filesWithoutPunctuationStayAsTheyAre() {
+        // Korean subtitles often have no full stops: nothing says where a sentence ends.
+        #expect(groups([(0, 1, "어디 갔었어"), (1.1, 2, "밤새 기다렸잖아"), (2.1, 3, "미안해")]) == [[0], [1], [2]])
     }
 }

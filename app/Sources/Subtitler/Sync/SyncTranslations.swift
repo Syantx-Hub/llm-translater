@@ -1,9 +1,12 @@
 import Foundation
 import NaturalLanguage
 
-/// Translations of a subtitle file's lines, made just ahead of where the video is.
+/// Translations of a subtitle file's sentences, made just ahead of where the video is.
+/// Cues that split one sentence are translated together (`SubtitleSentences`), so the
+/// work and the results are per sentence group, not per cue.
 actor SyncTranslations {
     private let cues: [SubtitleCue]
+    let sentences: SubtitleSentences
     private let translator: Translator
     private let source: String
     private let target: String
@@ -11,20 +14,22 @@ actor SyncTranslations {
     private var queue: [Int] = []
     private var working = false
 
-    /// - Parameter existing: translations already on disk (from Translate Subtitles), by index.
-    init(cues: [SubtitleCue], translator: Translator, source: String, target: String, existing: [Int: String] = [:]) {
+    /// - Parameter existing: translations already on disk (from Save Translated Copy), by group.
+    init(cues: [SubtitleCue], sentences: SubtitleSentences, translator: Translator, source: String, target: String,
+         existing: [Int: String] = [:]) {
         self.cues = cues
+        self.sentences = sentences
         self.translator = translator
         self.source = source
         self.target = target
         done = existing
     }
 
-    func translation(of index: Int) -> String? { done[index] }
+    func translation(ofGroup group: Int) -> String? { done[group] }
 
-    /// Translates these lines (in order) unless already done or queued.
-    func prefetch(_ indices: [Int]) {
-        let new = indices.filter { done[$0] == nil && !queue.contains($0) }
+    /// Translates the sentences these cues belong to (in order) unless already done or queued.
+    func prefetch(cues indices: [Int]) {
+        let new = sentences.groups(of: indices).filter { done[$0] == nil && !queue.contains($0) }
         // Newest request first: after a jump, the lines near the new position matter most.
         queue = new + queue.filter { !new.contains($0) }
         guard !working else { return }
@@ -34,25 +39,38 @@ actor SyncTranslations {
 
     private func work() async {
         while !queue.isEmpty {
-            let index = queue.removeFirst()
-            guard done[index] == nil else { continue }
-            let text = SubtitleFile.plainText(cues[index].text)
+            let group = queue.removeFirst()
+            guard done[group] == nil else { continue }
+            let text = sentences.text(of: group, in: cues)
             let translation = try? await SubtitlePipeline.translate(text, from: source, to: target, context: [], with: translator)
-            done[index] = translation ?? text
+            done[group] = translation ?? text
         }
         working = false
     }
 
-    /// Reuses a translated file made earlier ("Movie.my.srt" next to "Movie.en.srt") when
-    /// its lines line up with these, so nothing has to be translated live.
-    static func existingTranslations(for input: URL, cues: [SubtitleCue], target: String) -> [Int: String] {
+    /// Reuses a translated file made earlier ("Movie.my.srt" next to "Movie.en.srt"), by
+    /// sentence group, so nothing has to be translated live. Works both with copies whose
+    /// cues match one to one and with copies that joined split sentences into one cue.
+    static func existingTranslations(for input: URL, cues: [SubtitleCue], sentences: SubtitleSentences,
+                                     target: String) -> [Int: String] {
         let folder = input.deletingLastPathComponent()
         let base = SubtitleFile.outputURL(for: input, target: target).deletingPathExtension().lastPathComponent
         let candidate = folder.appendingPathComponent(base.replacingOccurrences(of: #" \d+$"#, with: "", options: .regularExpression) + ".srt")
-        guard candidate != input, let translated = try? SubtitleFile.read(candidate), translated.count == cues.count,
-              zip(translated, cues).allSatisfy({ abs($0.start - $1.start) < 0.01 })
-        else { return [:] }
-        return Dictionary(uniqueKeysWithValues: translated.enumerated().map { ($0.offset, $0.element.text) })
+        guard candidate != input, let translated = try? SubtitleFile.read(candidate) else { return [:] }
+        var result: [Int: String] = [:]
+        var next = 0
+        for (group, members) in sentences.groups.enumerated() {
+            let start = cues[members.first!].start, end = cues[members.last!].end
+            var parts: [String] = []
+            while next < translated.count, translated[next].start < end - 0.01 {
+                guard translated[next].start > start - 0.01 else { return [:] } // timings don't line up
+                parts.append(translated[next].text)
+                next += 1
+            }
+            guard !parts.isEmpty else { return [:] }
+            result[group] = parts.joined(separator: " ")
+        }
+        return next == translated.count ? result : [:]
     }
 }
 

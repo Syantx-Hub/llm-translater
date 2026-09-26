@@ -139,6 +139,9 @@ final class AppState: ObservableObject {
     @Published private(set) var syncStatus: SubtitleSync.Status?
     private var sync: SubtitleSync?
     private var syncTranslations: SyncTranslations?
+    private var syncSentences: SubtitleSentences?
+    /// Moves the file's clock, in seconds: positive shows subtitles earlier. Applies live.
+    @Published var syncOffset: Double { didSet { save(syncOffset, "syncOffset"); updateSyncedCaptions() } }
     private var syncTimer: Task<Void, Never>?
 
     /// Hide lines the recognizer was unsure about rather than show misheard words.
@@ -186,6 +189,7 @@ final class AppState: ObservableObject {
         responsiveness = defaults.string(forKey: "responsiveness").flatMap(Responsiveness.init) ?? .balanced
         appleAutoHandover = defaults.object(forKey: "appleAutoHandover") as? Bool ?? true
         hidesUnclearLines = defaults.object(forKey: "hidesUnclearLines") as? Bool ?? true
+        syncOffset = defaults.double(forKey: "syncOffset")
     }
 
     /// Starts a session. The phase flips to loading immediately, so a double click can't
@@ -484,6 +488,7 @@ final class AppState: ObservableObject {
         syncTimer = nil
         sync = nil
         syncTranslations = nil
+        syncSentences = nil
         syncStatus = nil
         sessionCaptionLanguage = nil
         models.inUse = []
@@ -521,7 +526,9 @@ final class AppState: ObservableObject {
             draft = caption
         case .line(let original, _, let seconds) where sync != nil:
             // Sync mode: what was heard only positions the file; its own lines are shown.
-            let speechEnded = Date().addingTimeInterval(-seconds - (usesAppleSpeech ? 0 : Double(responsiveness.tuning.endSilenceMS) / 1000))
+            let speechEnded = SubtitleSync.speechEnd(
+                lineShownAt: Date(), latency: seconds,
+                endSilence: usesAppleSpeech ? 0 : Double(responsiveness.tuning.endSilenceMS) / 1000)
             sync?.observe(original, speechEndedAt: speechEnded)
             updateSyncedCaptions()
         case .line(let original, let translation, let seconds):
@@ -588,10 +595,15 @@ extension AppState {
     fileprivate func startSync(translator: Translator, target: String, session id: Int) -> PlaybackSilenceDetector {
         let sync = SubtitleSync(cues: syncCues)
         self.sync = sync
-        let existing = syncFile.map { SyncTranslations.existingTranslations(for: $0, cues: syncCues, target: target) } ?? [:]
+        let sentences = SubtitleSentences(cues: syncCues)
+        syncSentences = sentences
+        let existing = syncFile.map {
+            SyncTranslations.existingTranslations(for: $0, cues: syncCues, sentences: sentences, target: target)
+        } ?? [:]
         syncTranslations = syncLanguage == target
             ? nil
-            : SyncTranslations(cues: syncCues, translator: translator, source: syncLanguage, target: target, existing: existing)
+            : SyncTranslations(cues: syncCues, sentences: sentences, translator: translator,
+                               source: syncLanguage, target: target, existing: existing)
         let silence = PlaybackSilenceDetector()
         silence.onChange = { [weak self] silent, since in
             DispatchQueue.main.async {
@@ -602,30 +614,33 @@ extension AppState {
         }
         syncTimer = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(100))
+                // 50 ms: a line shows at most that late after its time.
+                try? await Task.sleep(for: .milliseconds(50))
                 await MainActor.run { self?.updateSyncedCaptions() }
             }
         }
         return silence
     }
 
-    /// Shows the file's current lines (translated when ready) and translates the next ones.
+    /// Shows the file's current sentences (translated when ready) and translates the next
+    /// ones. A sentence split over several cues is shown as one line for all of them.
     fileprivate func updateSyncedCaptions() {
-        guard let sync, isRunning else { return }
-        let now = Date()
+        guard let sync, let sentences = syncSentences, isRunning else { return }
+        // The offset moves the file's clock: positive shows subtitles earlier.
+        let now = Date().addingTimeInterval(syncOffset)
         syncStatus = sync.status(at: now)
-        let active = sync.activeCues(at: now)
+        let groups = sentences.groups(of: sync.activeCues(at: now))
         Task { [syncTranslations, syncCues] in
-            await syncTranslations?.prefetch(sync.upcomingCues(at: now, count: 12))
+            await syncTranslations?.prefetch(cues: sync.upcomingCues(at: now, count: 12))
             var shown: [SubtitleLine] = []
-            for index in active {
-                let original = SubtitleFile.plainText(syncCues[index].text)
+            for group in groups {
+                let original = sentences.text(of: group, in: syncCues)
                 if let syncTranslations {
                     // Not translated yet: show nothing rather than the other language.
-                    guard let translation = await syncTranslations.translation(of: index) else { continue }
-                    shown.append(SubtitleLine(stableID: index, original: original, translation: translation))
+                    guard let translation = await syncTranslations.translation(ofGroup: group) else { continue }
+                    shown.append(SubtitleLine(stableID: group, original: original, translation: translation))
                 } else {
-                    shown.append(SubtitleLine(stableID: index, original: original, translation: original))
+                    shown.append(SubtitleLine(stableID: group, original: original, translation: original))
                 }
             }
             await MainActor.run { [weak self] in

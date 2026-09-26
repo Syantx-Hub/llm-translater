@@ -138,6 +138,12 @@ struct ControlPanel: View {
     }
 
     /// Subtitle-file mode: which file to follow, its language, and how the sync is going.
+    private var syncOffsetLabel: String {
+        let tenths = (state.syncOffset * 10).rounded() / 10
+        if tenths == 0 { return "On time" }
+        return String(format: "%.1f s %@", abs(tenths), tenths > 0 ? "earlier" : "later")
+    }
+
     private var syncSettings: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
@@ -159,6 +165,21 @@ struct ControlPanel: View {
                     show("subtitles")
                 }
                 .disabled(state.isRunning || state.isBusy)
+            }
+            if !state.syncCues.isEmpty {
+                // Fine-tunes the timing while watching; the clock itself follows the video.
+                HStack {
+                    Text("Timing")
+                    Spacer()
+                    Text(syncOffsetLabel)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                    Stepper("Timing", value: $state.syncOffset, in: -2...2, step: 0.1)
+                        .labelsHidden()
+                    Button("Reset") { state.syncOffset = 0 }
+                        .disabled(state.syncOffset == 0)
+                }
+                .help("If subtitles show a little late or early, nudge them. Takes effect immediately.")
             }
             Text(syncStatusText)
                 .font(.caption)

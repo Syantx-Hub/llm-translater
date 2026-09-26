@@ -38,6 +38,13 @@ final class SubtitleSync {
 
     var isSynced: Bool { anchor != nil }
 
+    /// When the speech of a line that was just shown ended: the pipeline reports how long
+    /// the line took after the segmenter closed it, and the segmenter closes a line
+    /// `endSilence` after the last word (Apple Speech reports the end itself: pass 0).
+    static func speechEnd(lineShownAt shown: Date, latency: TimeInterval, endSilence: TimeInterval) -> Date {
+        shown.addingTimeInterval(-latency - endSilence)
+    }
+
     func status(at now: Date) -> Status {
         guard let time = videoTime(at: now) else { return .searching }
         return pausedAt == nil ? .synced(videoTime: time) : .paused(videoTime: time)

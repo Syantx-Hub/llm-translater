@@ -5,11 +5,15 @@ import Foundation
 /// pipeline as live capture and prints the subtitles. Needs no audio-capture permission.
 ///
 ///   Subtitler --file clip.m4a [--source en] [--target my] [--model SPEECH_ID] [--translator ID|sidecar:nllb|off]
-///            [--responsiveness fast|balanced|accurate] [--realtime]
+///            [--responsiveness fast|balanced|accurate] [--realtime] [--sync SUBTITLES]
 ///
 /// Missing catalog models are downloaded first, into the same place the app uses.
 ///
 /// `--realtime` feeds audio at playback speed, so drafts and timings match live use.
+///
+/// `--sync SUBTITLES` runs Subtitle file mode instead: heard lines only position the file,
+/// and since the file starts playing when the run starts, it prints how far the sync clock
+/// is from the truth (positive: subtitles would show late). Use with `--realtime`.
 enum FileRunner {
     static func run(arguments: [String]) async -> Int32 {
         func option(_ name: String) -> String? {
@@ -26,8 +30,10 @@ enum FileRunner {
         let selection = option("--translator") ?? ModelCatalog.defaultTranslation
         let realtime = arguments.contains("--realtime")
         let responsiveness = option("--responsiveness").flatMap(Responsiveness.init) ?? .balanced
+        let syncPath = option("--sync")
 
         do {
+            let sync = try syncPath.map { SubtitleSync(cues: try SubtitleFile.read(URL(fileURLWithPath: $0))) }
             let samples = try loadAudio(URL(fileURLWithPath: path))
             print("[audio] \(String(format: "%.1f", Double(samples.count) / SystemAudioCapture.sampleRate)) s")
 
@@ -62,11 +68,20 @@ enum FileRunner {
             try await translator.start()
             print("[mt] \(selection) ready in \(String(format: "%.1f", Date().timeIntervalSince(t0))) s")
 
-            let start = Date()
+            let start = playbackStart.value // the audio "starts playing" now
             let elapsed = { String(format: "%6.2f", Date().timeIntervalSince(start)) }
+            let endSilence = speech.isBuiltIn ? 0 : Double(responsiveness.tuning.endSilenceMS) / 1000
             let pipeline = SubtitlePipeline(
-                transcriber: transcriber, translator: translator, source: source, target: target
+                transcriber: transcriber, translator: translator, source: source,
+                target: sync == nil ? target : nil // as in the app, sync only needs what was said
             ) { update in
+                if let sync, case .line(let original, _, let latency) = update {
+                    let ended = SubtitleSync.speechEnd(lineShownAt: Date(), latency: latency, endSilence: endSilence)
+                    let cue = sync.observe(original, speechEndedAt: ended)
+                    let error = sync.anchor.map { String(format: "%+.2f s", $0.timeIntervalSince(start)) } ?? "not synced"
+                    print("[\(elapsed())] heard  \(original)  → cue \(cue.map { String($0 + 1) } ?? "-"), clock \(error)")
+                    return
+                }
                 switch update {
                 case .draft(let caption?) where !caption.text.isEmpty:
                     print("[\(elapsed())] draft\(caption.isTranslation ? "*" : " ") \(caption.text)")
@@ -99,12 +114,15 @@ enum FileRunner {
             Trace.log("audio playback starts")
             for offset in stride(from: 0, to: padded.count, by: chunk) {
                 segmenter.append(Array(padded[offset..<min(offset + chunk, padded.count)]))
-                if realtime { try await Task.sleep(for: .milliseconds(100)) }
+                if realtime { try await playbackPace(offset + chunk) }
             }
             sink.finish()
             await pump.value
             await pipeline.flush()
             await translator.stop()
+            if let sync {
+                print("[sync] clock " + (sync.anchor.map { String(format: "%+.2f s (positive: subtitles late)", $0.timeIntervalSince(start)) } ?? "never synced"))
+            }
             print("[done] \(elapsed()) s")
             return 0
         } catch {
@@ -146,11 +164,21 @@ enum FileRunner {
             let piece = Array(padded[offset..<min(offset + chunk, padded.count)])
             segmenter.append(piece)
             recognizer.append(piece)
-            if realtime { try await Task.sleep(for: .milliseconds(100)) }
+            if realtime { try await playbackPace(offset + chunk) }
         }
         await recognizer.stop()
         sink.finish()
         await pump.value
+    }
+
+    /// Sleeps until `samples` of audio would have played since the first call, on an
+    /// absolute schedule: sleeping 100 ms per chunk drifts behind real time, and the sync
+    /// measurement would then blame the clock for it.
+    private static let playbackStart = LockedDate()
+    private static func playbackPace(_ samples: Int) async throws {
+        let due = playbackStart.value.addingTimeInterval(Double(samples) / SystemAudioCapture.sampleRate)
+        let wait = due.timeIntervalSinceNow
+        if wait > 0 { try await Task.sleep(for: .seconds(wait)) }
     }
 
     private static func ensureInstalled(_ model: ModelInfo) async throws -> URL {
@@ -241,4 +269,17 @@ private final class LoudnessMeter: @unchecked Sendable {
     }
 
     var rms: Double { count == 0 ? 0 : (sum / Double(count)).squareRoot() }
+}
+
+/// The first time it's read, remembers that moment.
+private final class LockedDate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var date: Date?
+
+    var value: Date {
+        lock.lock()
+        defer { lock.unlock() }
+        if date == nil { date = Date() }
+        return date!
+    }
 }
