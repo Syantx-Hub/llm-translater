@@ -61,12 +61,7 @@ actor OpenSubtitlesClient {
 
     /// - Parameter languages: Whisper/ISO 639-1 codes to filter by (empty = any).
     func search(_ query: String, languages: [String]) async throws -> [SubtitleSearchResult] {
-        var components = URLComponents(url: baseURL.appendingPathComponent("subtitles"), resolvingAgainstBaseURL: false)!
-        components.queryItems = [URLQueryItem(name: "query", value: query.lowercased())]
-        if !languages.isEmpty {
-            components.queryItems?.append(URLQueryItem(name: "languages", value: languages.map(Self.apiLanguage).sorted().joined(separator: ",")))
-        }
-        let data = try await send(URLRequest(url: components.url!))
+        let data = try await send(URLRequest(url: searchURL(query, languages: languages)))
         return try Self.parseSearch(data)
     }
 
@@ -83,6 +78,18 @@ actor OpenSubtitlesClient {
         let (file, _) = try await session.data(from: url)
         guard let text = SubtitleFile.decode(file) else { throw SubtitleFileError.unreadable }
         return text
+    }
+
+    /// OpenSubtitles wants parameters sorted by name and lowercased; otherwise it answers
+    /// with a redirect to the canonical URL.
+    func searchURL(_ query: String, languages: [String]) -> URL {
+        var items = [URLQueryItem(name: "query", value: query.lowercased())]
+        if !languages.isEmpty {
+            items.append(URLQueryItem(name: "languages", value: languages.map(Self.apiLanguage).sorted().joined(separator: ",")))
+        }
+        var components = URLComponents(url: baseURL.appendingPathComponent("subtitles"), resolvingAgainstBaseURL: false)!
+        components.queryItems = items.sorted { $0.name < $1.name }
+        return components.url!
     }
 
     private func logInIfConfigured() async throws {

@@ -143,6 +143,12 @@ import Testing
         #expect(OpenSubtitlesClient.apiLanguage("zh") == "zh-cn")
     }
 
+    @Test func searchParametersAreSortedAndLowercased() async {
+        let client = OpenSubtitlesClient(apiKey: "test")
+        let url = await client.searchURL("Parasite", languages: ["ko", "en"])
+        #expect(url.absoluteString == "https://api.opensubtitles.com/api/v1/subtitles?languages=en,ko&query=parasite")
+    }
+
     @Test func detectsASubtitleFilesLanguage() {
         let cues = ["밤새 어디 있었어?", "역에서 두 시간 동안 너를 기다렸어.", "걱정 마, 형이 집까지 데려다줄 거야."]
             .enumerated().map { SubtitleCue(start: Double($0.offset), end: Double($0.offset) + 1, text: $0.element) }
