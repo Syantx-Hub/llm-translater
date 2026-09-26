@@ -88,8 +88,15 @@ struct ControlPanel: View {
             }
             .disabled(state.isRunning || state.isBusy)
 
-            Text(state.responsiveness.detail)
-                .font(.caption).foregroundStyle(.secondary)
+            if models.speechModel?.isBuiltIn == true {
+                Text(state.sourceLanguage == Languages.auto
+                     ? "Apple Speech needs the spoken language. With Auto-detect, Whisper is used instead."
+                     : "Apple Speech shows words as they're spoken. Languages it can't hear use Whisper.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                Text(state.responsiveness.detail)
+                    .font(.caption).foregroundStyle(.secondary)
+            }
 
             VStack(alignment: .leading, spacing: 3) {
                 modelRow("waveform", models.speechModel?.name ?? "No speech model")

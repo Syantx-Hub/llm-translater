@@ -6,8 +6,8 @@ import Testing
 /// that override is global.
 @Suite(.serialized) @MainActor final class ModelFilesTests {
     private let root: URL
-    private let speech = ModelCatalog.speech[0]
-    private let otherSpeech = ModelCatalog.speech[3]
+    private let speech = ModelCatalog.whisper[0]
+    private let otherSpeech = ModelCatalog.whisper[3]
     private let translation = ModelCatalog.translation[0]
 
     init() throws {
@@ -179,6 +179,7 @@ import Testing
         try installSpeech(speech)
         try installGGUF(translation)
         let store = ModelStore(defaults: makeDefaults())
+        store.selectedSpeech = speech.id
         #expect(store.status(of: speech) == .installed)
         #expect(store.speechModel == speech)
         #expect(store.translationModel == translation)
@@ -190,9 +191,10 @@ import Testing
         #expect(!exists(ModelFiles.localURL(for: translation)))
         #expect(store.status(of: speech) == .notInstalled)
         #expect(store.status(of: translation) == .notInstalled)
-        #expect(store.speechModel == nil)
         #expect(store.translationModel == nil)
-        #expect(store.needsSetup)
+        // With no Whisper model left, only the built-in Apple Speech (macOS 26+) remains.
+        #expect(store.selectedSpeech == (AppleSpeech.isAvailable ? ModelCatalog.appleSpeechID : nil))
+        #expect(store.needsSetup == !AppleSpeech.isAvailable)
     }
 
     @Test func storeSelectsAnInstalledModelWhenTheChosenOneIsMissing() throws {
@@ -200,7 +202,7 @@ import Testing
         let defaults = makeDefaults()
         defaults.set(speech.id, forKey: "selectedSpeech")
         let store = ModelStore(defaults: defaults)
-        #expect(store.selectedSpeech == otherSpeech.id)
+        #expect(store.selectedSpeech == (AppleSpeech.isAvailable ? ModelCatalog.appleSpeechID : otherSpeech.id))
         #expect(!store.needsSetup)
     }
 
@@ -226,7 +228,8 @@ import Testing
 
         store.delete(speech)
 
-        #expect(store.selectedSpeech == otherSpeech.id)
+        // Apple Speech (when available) is the recommended fallback; otherwise the other Whisper.
+        #expect(store.selectedSpeech == (AppleSpeech.isAvailable ? ModelCatalog.appleSpeechID : otherSpeech.id))
         #expect(!store.needsSetup)
     }
 
@@ -238,6 +241,15 @@ import Testing
         #expect(store.selectedTranslation == ModelCatalog.defaultTranslation)
         let state = AppState(models: store, style: CaptionStyle(defaults: defaults))
         #expect(state.mode == .transcribe)
+    }
+
+    @Test func appleSpeechIsBuiltInAndCannotBeDeleted() throws {
+        try #require(AppleSpeech.isAvailable)
+        let store = ModelStore(defaults: makeDefaults())
+        #expect(store.isInstalled(ModelCatalog.appleSpeech))
+        store.delete(ModelCatalog.appleSpeech)
+        #expect(store.isInstalled(ModelCatalog.appleSpeech))
+        #expect(ModelFiles.allFiles(for: ModelCatalog.appleSpeech).isEmpty)
     }
 
     @Test func storeReportsInstalledBytes() throws {

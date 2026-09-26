@@ -178,6 +178,47 @@ import Testing
         #expect(!updates.values.contains { if case .detectedLanguage = $0 { true } else { false } })
     }
 
+    // MARK: Streaming recognizers (Apple Speech)
+
+    @Test func streamingFinalReusesTheVolatileTranslation() async {
+        let translator = FakeTranslator()
+        let (pipeline, updates) = pipeline(transcriber: FakeTranscriber(script: [:]), translator: translator)
+
+        await pipeline.submitVolatile("Where have you been?")
+        await pipeline.flush()
+        await pipeline.submitFinal("Where have you been?", speechEndedAt: Date())
+        await pipeline.flush()
+
+        #expect(await translator.calls == ["Where have you been?"])
+        #expect(lines(updates).map(\.translation) == ["[my] Where have you been?"])
+        #expect(updates.values.contains(.draft(DraftCaption(text: "[my] Where have you been?", isTranslation: true))))
+    }
+
+    @Test func finishedSentencesAreNotTranslatedTwice() async {
+        let translator = FakeTranslator()
+        let (pipeline, updates) = pipeline(transcriber: FakeTranscriber(script: [:]), translator: translator)
+
+        await pipeline.submitVolatile("I waited. Nobody")
+        await pipeline.flush()
+        await pipeline.submitFinal("I waited. Nobody came.", speechEndedAt: Date())
+        await pipeline.flush()
+
+        #expect(await translator.calls.filter { $0 == "I waited." }.count == 1)
+        #expect(lines(updates).map(\.translation) == ["[my] I waited. [my] Nobody came."])
+    }
+
+    @Test func streamingTranscribeOnlyShowsWordsAsTheyArrive() async {
+        let (pipeline, updates) = pipeline(
+            transcriber: FakeTranscriber(script: [:]), translator: PassthroughTranslator(), target: nil, translateDrafts: false)
+
+        await pipeline.submitVolatile("Hello")
+        await pipeline.submitFinal("Hello there.", speechEndedAt: Date())
+        await pipeline.flush()
+
+        #expect(updates.values.first == .draft(DraftCaption(text: "Hello", isTranslation: false)))
+        #expect(lines(updates).map(\.translation) == ["Hello there."])
+    }
+
     @Test func sentencesAreSplitOnEndPunctuation() {
         #expect(SubtitlePipeline.sentences(in: "Where were you? I waited. Call me!")
             == ["Where were you?", "I waited.", "Call me!"])

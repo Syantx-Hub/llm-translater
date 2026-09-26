@@ -37,11 +37,18 @@ enum FileRunner {
             }
             let transcriber = Transcriber()
             print("[asr] \(speech.name) — \(Hardware.chipName), \(Hardware.ramGB) GB")
-            let speechFolder = try await ensureInstalled(speech)
             var t0 = Date()
-            try await transcriber.load(model: speech.id, folder: speechFolder)
-            await transcriber.warmUp()
-            print("[asr] loaded in \(String(format: "%.1f", Date().timeIntervalSince(t0))) s")
+            if speech.isBuiltIn {
+                guard source != nil else {
+                    print("error: Apple Speech needs --source")
+                    return 2
+                }
+            } else {
+                let speechFolder = try await ensureInstalled(speech)
+                try await transcriber.load(model: speech.id, folder: speechFolder)
+                await transcriber.warmUp()
+                print("[asr] loaded in \(String(format: "%.1f", Date().timeIntervalSince(t0))) s")
+            }
 
             if let model = ModelCatalog.model(id: selection) { _ = try await ensureInstalled(model) }
             let translator = try TranslatorFactory.make(selection: selection)
@@ -63,6 +70,14 @@ enum FileRunner {
                 case .detectedLanguage(let code): print("[\(elapsed())] detected language: \(code)")
                 case .error(let message): print("[\(elapsed())] error  \(message)")
                 }
+            }
+
+            if speech.isBuiltIn, let source {
+                try await runAppleSpeech(samples, source: source, realtime: realtime, pipeline: pipeline)
+                await pipeline.flush()
+                await translator.stop()
+                print("[done] \(elapsed()) s")
+                return 0
             }
 
             let (events, sink) = AsyncStream<SpeechSegmenter.Event>.makeStream()
@@ -87,6 +102,35 @@ enum FileRunner {
             print("error: \(error.localizedDescription)")
             return 1
         }
+    }
+
+    /// Streams the file through Apple Speech in 100 ms chunks, like live capture.
+    private static func runAppleSpeech(_ samples: [Float], source: String, realtime: Bool,
+                                       pipeline: SubtitlePipeline) async throws {
+        guard #available(macOS 26.0, *), let locale = await AppleSpeech.locale(for: source) else {
+            throw SetupError.appleSpeechNeedsWhisper("Apple Speech can't recognise \(source).")
+        }
+        let recognizer = AppleSpeechRecognizer(locale: locale)
+        let (events, sink) = AsyncStream<AppleSpeechRecognizer.Event>.makeStream()
+        recognizer.onEvent = { sink.yield($0) }
+        try await recognizer.start { print("[download] Apple Speech assets \(Int($0 * 100))%") }
+        let pump = Task {
+            for await event in events {
+                switch event {
+                case .volatile(let text): await pipeline.submitVolatile(text)
+                case .final(let text, let ended): await pipeline.submitFinal(text, speechEndedAt: ended)
+                }
+            }
+        }
+        let chunk = Int(SystemAudioCapture.sampleRate) / 10
+        let padded = samples + [Float](repeating: 0, count: Int(SystemAudioCapture.sampleRate))
+        for offset in stride(from: 0, to: padded.count, by: chunk) {
+            recognizer.append(Array(padded[offset..<min(offset + chunk, padded.count)]))
+            if realtime { try await Task.sleep(for: .milliseconds(100)) }
+        }
+        await recognizer.stop()
+        sink.finish()
+        await pump.value
     }
 
     private static func ensureInstalled(_ model: ModelInfo) async throws -> URL {

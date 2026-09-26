@@ -52,6 +52,8 @@ enum ModelFiles {
             speechRepo.appendingPathComponent(variant, isDirectory: true)
         case .gguf(_, let fileName):
             root.appendingPathComponent("translation/\(fileName)")
+        case .system:
+            root
         }
     }
 
@@ -63,6 +65,8 @@ enum ModelFiles {
             [localURL(for: model), speechRepo.appendingPathComponent(".cache/huggingface/download/\(variant)", isDirectory: true)]
         case .gguf:
             [localURL(for: model)]
+        case .system:
+            []
         }
     }
 
@@ -74,12 +78,15 @@ enum ModelFiles {
             return requiredSpeechFiles.allSatisfy { size(of: url.appendingPathComponent($0)) > 0 }
         case .gguf:
             return isGGUF(url)
+        case .system:
+            return AppleSpeech.isAvailable
         }
     }
 
     /// Downloads the model and returns `localURL(for:)`. Cancelling the calling task
     /// cancels the download; nothing of a failed or cancelled attempt is left behind.
     static func download(_ model: ModelInfo, progress: @escaping @Sendable (Double) -> Void) async throws -> URL {
+        guard !model.isBuiltIn else { return localURL(for: model) }
         let lock = try DownloadLock(root: root, id: model.id, name: model.name)
         defer { lock.release() }
         let attempt = staging.appendingPathComponent("\(model.id)-\(UUID().uuidString)", isDirectory: true)
@@ -106,6 +113,8 @@ enum ModelFiles {
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             guard status == 200 else { throw ModelFilesError.badResponse(status) }
             guard isGGUF(staged) else { throw ModelFilesError.incomplete(model.name) }
+        case .system:
+            return localURL(for: model)
         }
 
         try install(staged, as: model)

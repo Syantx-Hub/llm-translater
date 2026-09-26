@@ -13,6 +13,9 @@ For how it all works inside, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Features
 
+- **Two speech engines** — Apple Speech (macOS 26, built in) shows words as they're
+  spoken, for English, Korean, Japanese, Chinese, French, German, Spanish and Portuguese.
+  Whisper covers every other language and Auto-detect.
 - **Translate or transcribe only** — pick the mode in the main window.
 - **Caption styling** (Captions window) — font, weight, size, line spacing, colours,
   outline/shadow, background, position, width, lines on screen and how long lines stay.
@@ -66,7 +69,7 @@ speaker stops. Translation runs sentence by sentence with a repetition guard.
 
 | Stage | Models | License |
 |---|---|---|
-| Speech | Whisper Large v3 Turbo (default), Turbo compact, Large v3, Small, Distil-Large v3 (English) | MIT |
+| Speech | Apple Speech (built in, macOS 26), Whisper Large v3 Turbo, Turbo compact, Large v3, Small, Distil-Large v3 (English) | Apple / MIT |
 | Translation | MADLAD-400 3B Q4_K_M (default), Q8_0 | Apache 2.0 |
 
 Models live in `~/Library/Application Support/Subtitler/Models`. Downloads go to a
@@ -97,7 +100,7 @@ $Subtitler --audio-probe          # permission status + 3 s capture level (never
 $Subtitler --snapshot /tmp/ui     # renders every window to PNGs, light and dark
 ```
 
-`--file` options: `--model <speech id>`, `--translator <model id | sidecar:nllb | off>`,
+`--file` options: `--model <speech id | apple-speech>`, `--translator <model id | sidecar:nllb | off>`,
 `--responsiveness fast|balanced|accurate`, `--realtime`. Missing models are downloaded first.
 
 ## Python tools (`python/`)

@@ -71,7 +71,7 @@ final class ModelStore: ObservableObject {
         for model in ModelCatalog.all where downloads[model.id] == nil {
             status[model.id] = ModelFiles.isInstalled(model) ? .installed : .notInstalled
         }
-        installedBytes = ModelCatalog.all.filter(isInstalled).reduce(0) { total, model in
+        installedBytes = ModelCatalog.all.filter { isInstalled($0) && !$0.isBuiltIn }.reduce(0) { total, model in
             total + Self.size(of: ModelFiles.localURL(for: model))
         }
         reselectIfNeeded()
@@ -146,7 +146,7 @@ final class ModelStore: ObservableObject {
     }
 
     func delete(_ model: ModelInfo) {
-        guard !inUse.contains(model.id), !isDownloading(model) else { return }
+        guard !model.isBuiltIn, !inUse.contains(model.id), !isDownloading(model) else { return }
         do {
             try ModelFiles.delete(model)
             status[model.id] = .notInstalled

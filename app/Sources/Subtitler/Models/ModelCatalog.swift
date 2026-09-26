@@ -13,6 +13,8 @@ struct ModelInfo: Identifiable, Hashable {
         case whisperKit(variant: String, tokenizer: ModelVariant)
         /// A single GGUF file run by llama.cpp.
         case gguf(url: URL, fileName: String)
+        /// Built into macOS (Apple Speech); nothing to download or delete.
+        case system
     }
 
     let id: String
@@ -32,13 +34,30 @@ struct ModelInfo: Identifiable, Hashable {
     let minRAMGB: Int
     let englishOnly: Bool
 
+    var isBuiltIn: Bool { source == .system }
+
     var sizeLabel: String {
-        sizeMB >= 1000 ? String(format: "%.1f GB", Double(sizeMB) / 1000) : "\(sizeMB) MB"
+        if isBuiltIn { return "Built in" }
+        return sizeMB >= 1000 ? String(format: "%.1f GB", Double(sizeMB) / 1000) : "\(sizeMB) MB"
     }
 }
 
 enum ModelCatalog {
-    static let speech: [ModelInfo] = [
+    static let appleSpeechID = "apple-speech"
+
+    /// Apple's streaming recognizer: words appear as they're spoken. macOS 26 and later,
+    /// and only for the languages Apple supports; other languages fall back to Whisper.
+    static let appleSpeech = ModelInfo(
+        id: appleSpeechID, kind: .speech,
+        name: "Apple Speech (instant)",
+        summary: "Words appear as they're spoken. English, Korean, Japanese, Chinese, French, German, Spanish and Portuguese.",
+        strengths: ["Lowest lag: captions keep up with the speaker", "Built into macOS — nothing to download"],
+        source: .system,
+        sizeMB: 0, speed: 5, quality: 4, license: "Apple", commercialUse: true, minRAMGB: 8, englishOnly: false)
+
+    static let speech: [ModelInfo] = (AppleSpeech.isAvailable ? [appleSpeech] : []) + whisper
+
+    static let whisper: [ModelInfo] = [
         ModelInfo(
             id: "openai_whisper-large-v3-v20240930", kind: .speech,
             name: "Whisper Large v3 Turbo",
@@ -105,10 +124,16 @@ enum ModelCatalog {
         all.first { $0.id == id }
     }
 
-    /// WhisperKit's pick for this chip, if it is in our list; otherwise Turbo.
+    /// Apple Speech where available (lowest lag); otherwise WhisperKit's pick for this chip.
     static var recommendedSpeech: String {
+        if AppleSpeech.isAvailable { return appleSpeechID }
+        return recommendedWhisper
+    }
+
+    /// The Whisper model to use when Apple Speech can't (unsupported language, auto-detect).
+    static var recommendedWhisper: String {
         let recommended = Transcriber.recommendedModel
-        return speech.contains { $0.id == recommended } ? recommended : speech[0].id
+        return whisper.contains { $0.id == recommended } ? recommended : whisper[0].id
     }
 
     static var recommendedTranslation: String {

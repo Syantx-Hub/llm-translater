@@ -65,6 +65,10 @@ actor SubtitlePipeline {
     private var draftTranslation: (text: String, task: Task<String?, Never>)?
     /// The latest finished draft translation of the current utterance.
     private var translatedDraft: (text: String, translation: String)?
+    /// Recent sentence translations. Drafts translate sentences as soon as they're complete,
+    /// so a final usually finds all but its last sentence here.
+    private var sentenceCache: [String: String] = [:]
+    private var sentenceCacheOrder: [String] = []
 
     init(transcriber: any SpeechTranscribing, translator: Translator, source: String?, target: String?,
          translateDrafts: Bool = true, emit: @escaping @Sendable (Update) -> Void) {
@@ -182,9 +186,9 @@ actor SubtitlePipeline {
         guard draftTranslation == nil, let text = pendingDraftText, let from = source, let target else { return }
         pendingDraftText = nil
         let generation = utterance
-        let task = Task { [translator, context] in
+        let task = Task { [context] in
             let t0 = Date()
-            let result = try? await Self.translate(text, from: from, to: target, context: context, with: translator)
+            let result = try? await self.translateCached(text, from: from, to: target, context: context)
             Trace.log("draft mt \(String(format: "%.2f", Date().timeIntervalSince(t0)))s")
             return result
         }
@@ -204,6 +208,37 @@ actor SubtitlePipeline {
             emit(.draft(DraftCaption(text: translation, isTranslation: true)))
         }
         startDraftTranslation()
+    }
+
+    // MARK: Text from streaming recognizers
+
+    /// In-progress words from a streaming recognizer (Apple Speech), which does its own
+    /// speech detection, so no segmenter or Whisper is involved.
+    func submitVolatile(_ text: String) {
+        guard !cancelled, !text.isEmpty else { return }
+        guard translateDrafts, sourceNeedsTranslation else {
+            emit(.draft(DraftCaption(text: text, isTranslation: false)))
+            return
+        }
+        if draftTranslation == nil, translatedDraft == nil {
+            emit(.draft(DraftCaption(text: text, isTranslation: false)))
+        }
+        pendingDraftText = text
+        startDraftTranslation()
+    }
+
+    /// A finished phrase from a streaming recognizer.
+    func submitFinal(_ text: String, speechEndedAt: Date) {
+        guard !cancelled, !text.isEmpty else { return }
+        let inFlight = draftTranslation
+        let finished = translatedDraft
+        utterance += 1
+        lastDraft = nil
+        pendingDraftText = nil
+        draftTranslation = nil
+        translatedDraft = nil
+        Trace.log("stream final; mt \(finished?.text == text ? "reused" : inFlight?.text == text ? "in flight" : "needed")")
+        commit(text, endedAt: speechEndedAt, inFlight: inFlight, finished: finished)
     }
 
     // MARK: Finals
@@ -241,6 +276,13 @@ actor SubtitlePipeline {
             }
         }
 
+        commit(text, endedAt: final.endedAt, inFlight: inFlight, finished: finished)
+    }
+
+    /// Emits a finished line, reusing the draft's translation when it matches.
+    private func commit(_ text: String, endedAt: Date,
+                        inFlight: (text: String, task: Task<String?, Never>)?,
+                        finished: (text: String, translation: String)?) {
         let from = source ?? ""
         let lineContext = context
         context.append(text)
@@ -250,10 +292,10 @@ actor SubtitlePipeline {
         let finishedTranslation = finished?.text == text ? finished?.translation : nil
 
         let previous = translationChain
-        translationChain = Task { [translator, target] in
+        translationChain = Task { [target] in
             await previous?.value
             guard !Task.isCancelled else { return }
-            let latency = { Date().timeIntervalSince(final.endedAt) }
+            let latency = { Date().timeIntervalSince(endedAt) }
             // `translate` is false when only transcribing (no target) or the pair is unsupported.
             guard translate, let target else {
                 self.emit(.line(original: text, translation: text, latency: latency()))
@@ -268,7 +310,7 @@ actor SubtitlePipeline {
                 return
             }
             do {
-                let translation = try await Self.translate(text, from: from, to: target, context: lineContext, with: translator)
+                let translation = try await self.translateCached(text, from: from, to: target, context: lineContext)
                 self.emit(.line(original: text, translation: translation, latency: latency()))
             } catch {
                 guard !Task.isCancelled else { return }
@@ -279,6 +321,24 @@ actor SubtitlePipeline {
     }
 
     // MARK: Translation
+
+    /// `translate(...)` with a per-sentence cache shared by drafts and finals.
+    private func translateCached(_ text: String, from source: String, to target: String, context: [String]) async throws -> String {
+        var parts: [String] = []
+        for sentence in Self.sentences(in: text) {
+            let key = "\(source)>\(target)|\(sentence)"
+            if let cached = sentenceCache[key] {
+                parts.append(cached)
+                continue
+            }
+            let translation = try await translator.translate(sentence, from: source, to: target, context: context)
+            sentenceCache[key] = translation
+            sentenceCacheOrder.append(key)
+            if sentenceCacheOrder.count > 64 { sentenceCache[sentenceCacheOrder.removeFirst()] = nil }
+            parts.append(translation)
+        }
+        return parts.joined(separator: " ")
+    }
 
     /// Translates sentence by sentence: short inputs are faster and keep MT models from
     /// looping or dropping clauses on long run-on transcripts.

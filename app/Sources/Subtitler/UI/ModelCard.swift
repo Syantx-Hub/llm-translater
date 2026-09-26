@@ -97,7 +97,11 @@ struct ModelCard: View {
                         .disabled(!store.inUse.isEmpty)
                         .help(store.inUse.isEmpty ? "" : "Stop subtitles to switch models.")
                 }
-                if locked {
+                if model.isBuiltIn {
+                    Text("Built into macOS")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if locked {
                     Text("Stop subtitles to delete")
                         .font(.caption)
                         .foregroundStyle(.secondary)

@@ -43,7 +43,7 @@ flowchart LR
 |---|---|---|
 | Audio capture | Core Audio process tap (macOS 14.2+), ScreenCaptureKit fallback | Audio thread |
 | Segmentation | Energy-based voice activity detection (VAD) | Capture queue |
-| Speech to text | [WhisperKit](https://github.com/argmaxinc/WhisperKit) (CoreML Whisper) | Neural Engine / GPU |
+| Speech to text | Apple Speech (`SpeechAnalyzer`, macOS 26) or [WhisperKit](https://github.com/argmaxinc/WhisperKit) (CoreML Whisper) | On-device / Neural Engine |
 | Translation | MADLAD-400 3B GGUF on [llama.cpp](https://github.com/ggml-org/llama.cpp) | GPU (Metal) |
 | UI | SwiftUI + AppKit (`NSPanel`) | Main thread |
 
@@ -283,6 +283,31 @@ go into an `AsyncStream` that one task forwards to the pipeline in order.
 
 ## 7. Speech recognition
 
+There are two engines. The session picks one in `AppState.chooseSpeechEngine()`:
+
+- **Apple Speech** is used when it is selected, macOS is 26 or later, and the spoken
+  language is set (not Auto-detect) to one Apple supports: English, Korean, Japanese,
+  Chinese, French, German, Spanish or Portuguese.
+- **Whisper** is used otherwise. When Apple Speech is selected but can't be used, the
+  recommended installed Whisper model takes over, and the panel says why.
+
+### Apple Speech (streaming)
+
+`AppleSpeechRecognizer` feeds captured audio, converted to the analyzer's preferred
+format, into a `SpeechAnalyzer` with a `SpeechTranscriber` (`.progressiveTranscription`
+preset). There is no segmenter and no Whisper. Apple does its own endpointing and reports:
+
+- **volatile results**: the words so far, updated about once a second, usually within
+  0.1–0.5 s of being spoken. These go to `SubtitlePipeline.submitVolatile`.
+- **final results**: one per phrase, about 1 s after it ends. These go to `submitFinal`,
+  with the phrase end estimated from `result.range.end` against the audio fed so far.
+
+The language's on-device assets are installed through `AssetInventory` the first time;
+the status line shows the download. Apple Speech is listed in the catalog as a built-in
+model (`Source.system`): always installed, nothing to download or delete.
+
+### Whisper (WhisperKit)
+
 `Transcriber` is an actor around `WhisperKit`. It conforms to `SpeechTranscribing`, the
 protocol the pipeline depends on, so tests can use a fake.
 
@@ -369,6 +394,17 @@ line is emitted. `AppState` smooths it and shows it in the status line.
 
 In auto mode, the language is locked from the **first final**, never from a draft: half a
 second of audio is too little to trust. Until then, drafts are shown untranslated.
+
+### Streaming recognizers
+
+Apple Speech bypasses the segmenter path. `submitVolatile` shows the words and translates
+them, keeping at most one draft translation in flight. `submitFinal` commits the phrase
+through the same `commit()` as Whisper finals, reusing the draft translation when the text
+matches.
+
+Translations are also cached **per sentence** (64 entries). A volatile result often
+already contains the finished first sentences of a phrase, so the final only translates
+what is new.
 
 ### Transcribe-only
 
@@ -534,6 +570,7 @@ UserDefaults on change.
 
 | Speech | Size | Notes |
 |---|---|---|
+| Apple Speech (instant) | Built in | Default on macOS 26; lowest lag; 8 languages |
 | Whisper Large v3 Turbo | 1.6 GB | Default; WhisperKit's pick on most chips |
 | Turbo (compact) | 627 MB | Leaves memory for other apps |
 | Large v3 | 3.1 GB | Most accurate; 16 GB+ |
@@ -681,7 +718,7 @@ Notes:
 ## 15. Tests
 
 ```sh
-cd app && swift test                              # 58 tests, ~1–2 s
+cd app && swift test                              # 62 tests, ~1–2 s
 SUBTITLER_E2E=1 swift test --filter endToEnd      # real models, slow
 python3 -m unittest discover -s python/tests      # sidecar protocol
 ```
