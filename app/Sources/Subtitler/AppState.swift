@@ -168,7 +168,7 @@ final class AppState: ObservableObject {
 
     let models: ModelStore
     let style: CaptionStyle
-    private let defaults = UserDefaults.standard
+    private let defaults: UserDefaults
     private let transcriber = Transcriber()
     private var loadedModel: String?
     /// Bumped on every start, stop and failure; work from an older session is ignored.
@@ -180,7 +180,8 @@ final class AppState: ObservableObject {
     private var hideTask: Task<Void, Never>?
     private lazy var overlay = OverlayController(state: self, style: style)
 
-    init(models: ModelStore, style: CaptionStyle) {
+    init(models: ModelStore, style: CaptionStyle, defaults: UserDefaults = .standard) {
+        self.defaults = defaults
         self.models = models
         self.style = style
         sourceLanguage = defaults.string(forKey: "sourceLanguage") ?? Languages.auto
@@ -624,7 +625,7 @@ extension AppState {
             ? nil
             : SyncTranslations(cues: syncCues, sentences: sentences, translator: translator,
                                source: syncLanguage, target: target, existing: existing, cacheURL: cacheURL,
-                               notes: CharacterNotes.get(for: syncFile)) { status in
+                               title: FilmTitle.from(syncFile), notes: CharacterNotes.get(for: syncFile)) { status in
                 Task { @MainActor [weak self] in
                     guard let self, self.session == id else { return }
                     self.syncCloudStatus = status

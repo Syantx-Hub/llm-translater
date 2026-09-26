@@ -13,6 +13,7 @@ enum LLMPrompt {
         - Keep names of people and places as names. Transliterate them into \(to) script; never translate their meaning.
         - Choose politeness and register from context: how the speakers relate (friends, family, lovers, strangers, a boss). Casual speech stays casual.
         - Keep each line's meaning. Don't add explanations, and don't merge, split or skip lines.
+        - Never add information: no hints about what happens later, and no names or relationships the characters haven't revealed yet.
         - Output only the translation.
         """
         if let note = registerNote[target] { rules += "\n- \(note)" }
@@ -43,6 +44,9 @@ enum LLMPrompt {
         if !film.cast.isEmpty {
             message += "About the characters (use this for how each pair speaks to each other):\n\(film.cast)\n\n"
         }
+        if let position = film.position {
+            message += "These lines are \(Int((position * 100).rounded()))% of the way into the story. Use only what the viewer knows by now: never let a word choice hint at something revealed later.\n\n"
+        }
         if !film.names.isEmpty {
             message += "Names in this film (keep them as names): \(film.names.joined(separator: ", "))\n\n"
         }
@@ -62,15 +66,16 @@ enum LLMPrompt {
         return """
         You help a subtitle translator working into \(to). Read a film's dialogue and describe its characters and how they relate, so the translation uses the right register between each pair.
         Reply with at most 15 short lines, nothing else:
-        - One line per main character: the name as written, then in \(to) script, and who they are (e.g. "Kim Ki-taek (ကင်မ်ကီတက်): father of Ki-woo and Ki-jung").
-        - One line per important pair: how they relate and how they should speak to each other in \(to) (casual or polite, and the pronouns or endings to use).
+        - One line per main character: the name as written, then in \(to) script, and who they are when they first appear (e.g. "Kim Ki-taek (ကင်မ်ကီတက်): father of Ki-woo and Ki-jung").
+        - One line per important pair: how they relate and how they should speak to each other in \(to) (casual or polite, and the pronouns or endings to use). If that changes (strangers who become friends), say what it is at first and roughly when it changes: early, middle or late in the story.
+        Keep it spoiler-free: describe people only as the story presents them at that point. No twists, hidden identities, secret relationships, betrayals, deaths or endings. If a relationship is only revealed later, describe it the way the characters behave before the reveal.
         If something isn't clear from the dialogue, say "unclear" rather than guessing.
         """
     }
 
     /// Dialogue capped to fit one request: a long film is sampled evenly, so every part of
     /// the story is represented.
-    static func castRequest(_ dialogue: [String], maxCharacters: Int = 24_000) -> String {
+    static func castRequest(_ dialogue: [String], title: String? = nil, maxCharacters: Int = 24_000) -> String {
         let lines = dialogue.filter { !$0.isEmpty }
         var chosen = lines
         let total = lines.reduce(0) { $0 + $1.count + 1 }
@@ -79,7 +84,11 @@ enum LLMPrompt {
             let step = Double(lines.count) / Double(keep)
             chosen = (0..<keep).map { lines[Int(Double($0) * step)] }
         }
-        return "The film's dialogue\(chosen.count < lines.count ? " (a sample)" : ""), in order:\n" + chosen.joined(separator: "\n")
+        var message = ""
+        if let title {
+            message += "These subtitles are from: \(title) (from the file name). If you know this film or series, use what you know about its characters and how they relate, and the names its audience in the target language knows them by; check it against the dialogue. If you don't know it, work from the dialogue alone.\n\n"
+        }
+        return message + "The dialogue\(chosen.count < lines.count ? " (a sample)" : ""), in order:\n" + chosen.joined(separator: "\n")
     }
 
     /// Maps "1. …" lines back to the inputs; nil unless every number 1…count is there

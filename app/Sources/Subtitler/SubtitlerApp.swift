@@ -131,11 +131,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// The `Window` scenes' ids.
+    static let windowIDs = ["main", "welcome", "captions", "find-subtitles", "subtitles", "models"]
+
     @MainActor
     static func updateActivationPolicy(ignoring closing: NSWindow? = nil) {
+        // Only the app's own windows count; the menu bar panel and the overlay never do, so
+        // clicking the menu bar icon keeps the app out of the Dock.
         let hasWindow = NSApp.windows.contains { window in
-            window !== closing && window.isVisible && !(window is NSPanel) && window.styleMask.contains(.titled)
-                && window.level == .normal
+            guard window !== closing, window.isVisible, let id = window.identifier?.rawValue else { return false }
+            return Self.windowIDs.contains { id.contains($0) }
         }
         let policy: NSApplication.ActivationPolicy = hasWindow ? .regular : .accessory
         guard NSApp.activationPolicy() != policy else { return }

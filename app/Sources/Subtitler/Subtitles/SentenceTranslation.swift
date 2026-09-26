@@ -7,6 +7,14 @@ struct FilmContext: Sendable, Equatable {
     /// Who the characters are to each other and how they speak (casual or polite): the
     /// model's cast sheet from reading the whole script, plus the viewer's own notes.
     var cast = ""
+    /// How far into the story this batch is (0–1), so it only uses what the viewer knows by then.
+    var position: Double?
+
+    func at(_ group: Int, of total: Int) -> FilmContext {
+        var copy = self
+        copy.position = total > 0 ? Double(group) / Double(total) : nil
+        return copy
+    }
 }
 
 /// Engines that translate many lines per request with context (LLMs). Batching keeps a
@@ -19,16 +27,41 @@ protocol BatchTranslating: Translator {
                         context: [String], film: FilmContext) async throws -> [String]
     /// Reads the whole script once and describes the characters and their relationships,
     /// so every batch uses the right register between each pair.
-    func castSheet(dialogue: [String], from source: String, to target: String) async throws -> String
+    /// - Parameter title: the film or episode, from the file name, so the model can use
+    ///   what it knows about it.
+    func castSheet(dialogue: [String], title: String?, from source: String, to target: String) async throws -> String
+}
+
+/// "Parasite (2019)" or "Breaking Bad S01E01", from a subtitle file's name: release tags,
+/// the language code and dots are dropped.
+enum FilmTitle {
+    static func from(_ file: URL?) -> String? {
+        guard let file else { return nil }
+        var name = file.deletingPathExtension().lastPathComponent
+        // "Movie.en" → "Movie"
+        if let dot = name.lastIndex(of: "."), name.distance(from: dot, to: name.endIndex) <= 4 {
+            let suffix = name[name.index(after: dot)...].lowercased()
+            if Languages.isSupported(suffix) || ["eng", "kor", "jpn", "chi", "zho", "mya", "bur"].contains(suffix) {
+                name = String(name[..<dot])
+            }
+        }
+        name = name.replacingOccurrences(of: #"[._]"#, with: " ", options: .regularExpression)
+        // Cut at the first release tag ("1080p", "WEB-DL", "x264", …), keeping a year or episode.
+        let tags = #"(?i)\b(2160p|1080p|720p|480p|web[- ]?dl|webrip|bluray|brrip|bdrip|dvdrip|hdtv|x26[45]|h ?26[45]|hevc|aac|ddp?5 1|proper|repack|extended|remux|10bit|amzn|nf|hmax|dsnp)\b.*$"#
+        name = name.replacingOccurrences(of: tags, with: "", options: .regularExpression)
+        name = name.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet.whitespaces.union(CharacterSet(charactersIn: "-[]")))
+        return name.count >= 2 ? name : nil
+    }
 }
 
 extension FilmContext {
     /// Everything known about the film before translating: names found on device, the
     /// model's cast sheet (one request; skipped if it fails), and the viewer's notes.
-    static func prepare(cues: [SubtitleCue], from source: String, to target: String,
+    static func prepare(cues: [SubtitleCue], title: String?, from source: String, to target: String,
                         with batcher: BatchTranslating, notes: String) async -> FilmContext {
         let dialogue = cues.map { SubtitleFile.plainText($0.text) }
-        let sheet = (try? await batcher.castSheet(dialogue: dialogue, from: source, to: target)) ?? ""
+        let sheet = (try? await batcher.castSheet(dialogue: dialogue, title: title, from: source, to: target)) ?? ""
         let viewer = notes.trimmingCharacters(in: .whitespacesAndNewlines)
         let cast = [sheet, viewer.isEmpty ? "" : "From the viewer (trust this over the above):\n" + viewer]
             .filter { !$0.isEmpty }.joined(separator: "\n")
@@ -59,7 +92,7 @@ enum SentenceTranslation {
     ///   - onStep: called after every request with everything translated so far.
     static func run(order: [Int], cues: [SubtitleCue], sentences: SubtitleSentences,
                     from source: String, to target: String, with translator: Translator,
-                    done initial: [Int: String] = [:], notes: String = "",
+                    done initial: [Int: String] = [:], title: String? = nil, notes: String = "",
                     onStep: @Sendable (Step) async -> Void = { _ in }) async throws -> [Int: String] {
         var done = initial
         var requests = 0
@@ -67,13 +100,14 @@ enum SentenceTranslation {
         do {
             if let batcher = translator as? BatchTranslating {
                 let film = pending.isEmpty ? FilmContext()
-                    : await FilmContext.prepare(cues: cues, from: source, to: target, with: batcher, notes: notes)
+                    : await FilmContext.prepare(cues: cues, title: title, from: source, to: target, with: batcher, notes: notes)
                 for batch in batches(pending, size: batcher.batchSize) {
                     try Task.checkCancellation()
                     let lines = batch.map { sentences.text(of: $0, in: cues) }
                     let context = (max(0, batch[0] - contextLines)..<batch[0]).map { sentences.text(of: $0, in: cues) }
                     let translations = try await batcher.translateBatch(lines, from: source, to: target,
-                                                                        context: context, film: film)
+                                                                        context: context,
+                                                                        film: film.at(batch[0], of: sentences.groups.count))
                     for (group, translation) in zip(batch, translations) { done[group] = translation }
                     requests += 1
                     await onStep(Step(done: done, requestsDone: requests))

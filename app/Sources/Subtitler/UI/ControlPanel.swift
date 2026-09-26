@@ -228,7 +228,8 @@ struct ControlPanel: View {
                     TranslationEnginePicker(models: models, mode: .synced) { show("models") }
                     if let provider = models.cloudProvider, let estimate = state.syncEstimate(models: models) {
                         CloudEstimateView(estimate: estimate, provider: provider,
-                                          freeTier: models.cloudConfig.usesFreeTier(provider))
+                                          freeTier: models.cloudConfig.usesFreeTier(provider),
+                                  model: models.cloudConfig.model(for: provider))
                     }
                     if models.cloudProvider != nil {
                         CharacterNotesField(file: state.syncFile)

@@ -22,7 +22,7 @@ actor FakeBatchTranslator: BatchTranslating {
         "[\(target)] \(text)"
     }
 
-    func castSheet(dialogue: [String], from source: String, to target: String) async throws -> String {
+    func castSheet(dialogue: [String], title: String?, from source: String, to target: String) async throws -> String {
         castRequests += 1
         return "Line 1 and Line 2 are siblings: casual."
     }
@@ -87,6 +87,9 @@ actor FakeBatchTranslator: BatchTranslating {
                                      film: FilmContext(names: ["Jin"], cast: "Jin (ဂျင်): Mina's older brother; casual."))
         #expect(prompt.contains("Names in this film (keep them as names): Jin"))
         #expect(prompt.contains("About the characters (use this for how each pair speaks to each other):\nJin (ဂျင်)"))
+        let later = LLMPrompt.batch(["Hi."], context: [], film: FilmContext(cast: "x").at(35, of: 100))
+        #expect(later.contains("35% of the way into the story"))
+        #expect(LLMPrompt.castSystem(from: "ko", to: "my").contains("spoiler-free"))
         #expect(prompt.contains("> We're late."))
         #expect(prompt.hasSuffix("1. Hi, Jin.\n2. Where to?"))
     }
@@ -210,6 +213,7 @@ actor FakeBatchTranslator: BatchTranslating {
         #expect(await translator.castRequests == 1)
         let film = await translator.films[2]
         #expect(film.cast.contains("siblings: casual"))
+        #expect(film.position == 6.0 / 7.0) // the third batch starts at sentence 6 of 7
         #expect(film.cast.hasSuffix("From the viewer (trust this over the above):\nLine 7 is the boss."))
     }
 
@@ -220,6 +224,16 @@ actor FakeBatchTranslator: BatchTranslating {
         #expect(request.contains("(a sample)"))
         #expect(request.contains("Line number 1 of"))
         #expect(!LLMPrompt.castRequest(["Hi.", "Bye."]).contains("sample"))
+        #expect(LLMPrompt.castRequest(["Hi."], title: "Parasite (2019)").hasPrefix("These subtitles are from: Parasite (2019)"))
+    }
+
+    @Test func titleFromTheFileName() {
+        func title(_ name: String) -> String? { FilmTitle.from(URL(fileURLWithPath: "/tmp/" + name)) }
+        #expect(title("Parasite (2019).ko.srt") == "Parasite (2019)")
+        #expect(title("Breaking Bad S01E01.en.srt") == "Breaking Bad S01E01")
+        #expect(title("Breaking.Bad.S01E01.720p.HDTV.x264-BiA.srt") == "Breaking Bad S01E01")
+        #expect(title("Squid_Game_2021_WEB-DL_1080p.kor.srt") == "Squid Game 2021")
+        #expect(title("x.srt") == nil)
     }
 
     @Test func quotaStopSavesPartialAndNextRunResumes() async throws {

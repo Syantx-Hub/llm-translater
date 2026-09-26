@@ -95,6 +95,8 @@ struct CloudEstimateView: View {
     let estimate: CloudEstimate
     let provider: CloudProvider
     let freeTier: Bool
+    /// The chosen model, for its published free limits.
+    var model = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -104,7 +106,7 @@ struct CloudEstimateView: View {
                 NoticeRow(symbol: "paperplane", text: summary)
                 LearnMore {
                     Text("\(estimate.cues) subtitle lines make \(estimate.groups) sentences; \(estimate.groups - estimate.remaining) are already translated. They go \(CloudTranslator.defaultBatchSize) at a time, plus one request where the AI reads the whole script to work out who's who: about \(estimate.requests) requests.")
-                    if freeTier, let limits = provider.model(CloudConfig(defaults: .standard).model(for: provider))?.freeLimits {
+                    if freeTier, let limits = provider.model(model)?.freeLimits {
                         Text("Free tier, approximate: \(limitText(limits)). Limits change often; check \(provider.name)'s page.")
                     }
                     Text("Translations are saved next to the subtitle file, so watching again sends nothing.")
@@ -152,16 +154,27 @@ struct CharacterNotesField: View {
 
     final class Draft: ObservableObject { @Published var value = "" }
 
+    @StateObject private var open = Flag()
+
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Notes about the characters (optional)")
+            NoticeRow(symbol: "person.2", text: "Who's who is worked out for you: the AI reads the whole script and uses what it knows about \(FilmTitle.from(file).map { "“\($0)”" } ?? "the film").")
+            if open.value || !text.value.isEmpty { editor } else {
+                Button("Add notes (optional)…") { open.value = true }
+                    .buttonStyle(.link).font(.caption)
+            }
+        }
+        .onAppear { text.value = CharacterNotes.get(for: file) }
+        .onChange(of: file) { text.value = CharacterNotes.get(for: $0) }
+    }
+
+    private var editor: some View {
+        VStack(alignment: .leading, spacing: 4) {
             TextField("e.g. Mina and Jin-woo are siblings; Mr. Park is their boss.", text: $text.value, axis: .vertical)
                 .lineLimit(2...4)
                 .textFieldStyle(.roundedBorder)
                 .onChange(of: text.value) { CharacterNotes.set($0, for: file) }
-            HelpNote("Before translating, the AI reads the whole script and works out who's who. Anything you add here is trusted over its guesses, and decides casual or polite speech between characters.")
+            HelpNote("Only if it gets someone wrong: what you write here is trusted over its guesses.")
         }
-        .onAppear { text.value = CharacterNotes.get(for: file) }
-        .onChange(of: file) { text.value = CharacterNotes.get(for: $0) }
     }
 }

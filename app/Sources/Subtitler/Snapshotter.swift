@@ -10,10 +10,15 @@ enum Snapshotter {
     static func run(into directory: String) {
         _ = NSApplication.shared
         // Never the real Keychain: a snapshot must not show whether keys exist.
-        // A made-up key, so the Cloud section shows its masked "saved" state.
-        let models = ModelStore(secrets: MemorySecretStore(["openrouter": "sk-or-example-0000-1234"]))
-        let style = CaptionStyle()
-        let state = AppState(models: models, style: style)
+        // Throwaway settings and a made-up key: a snapshot never changes the real app's
+        // settings, and the Cloud section shows its masked "saved" state.
+        let defaults = UserDefaults(suiteName: "com.syantxhub.subtitler.snapshot")!
+        defaults.removePersistentDomain(forName: "com.syantxhub.subtitler.snapshot")
+        defer { defaults.removePersistentDomain(forName: "com.syantxhub.subtitler.snapshot") }
+        WelcomeView.recordsTour = false
+        let models = ModelStore(defaults: defaults, secrets: MemorySecretStore(["openrouter": "sk-or-example-0000-1234"]))
+        let style = CaptionStyle(defaults: defaults)
+        let state = AppState(models: models, style: style, defaults: defaults)
         let out = URL(fileURLWithPath: directory, isDirectory: true)
         try? FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
 

@@ -63,10 +63,10 @@ actor CloudTranslator: BatchTranslating {
         return first + second
     }
 
-    func castSheet(dialogue: [String], from source: String, to target: String) async throws -> String {
+    func castSheet(dialogue: [String], title: String?, from source: String, to target: String) async throws -> String {
         let reply = try await complete(CloudAdapter.Prompt(
             system: LLMPrompt.castSystem(from: source, to: target),
-            user: LLMPrompt.castRequest(dialogue), maxTokens: 4096))
+            user: LLMPrompt.castRequest(dialogue, title: title), maxTokens: 4096))
         return reply.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 

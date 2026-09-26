@@ -26,7 +26,7 @@ enum SubtitleTranslator {
     /// a whole sentence. Other cues keep their timing. `existing` translations (by sentence
     /// group, from an earlier partial run) are kept, so only the rest is translated.
     static func translate(_ cues: [SubtitleCue], from source: String, to target: String, with translator: Translator,
-                          existing: [Int: String] = [:], notes: String = "",
+                          existing: [Int: String] = [:], title: String? = nil, notes: String = "",
                           progress: @escaping @Sendable (Progress) -> Void) async throws -> [SubtitleCue] {
         let sentences = SubtitleSentences(cues: cues)
         let total = sentences.groups.count
@@ -35,7 +35,7 @@ enum SubtitleTranslator {
         do {
             let done = try await SentenceTranslation.run(
                 order: Array(sentences.groups.indices), cues: cues, sentences: sentences,
-                from: source, to: target, with: translator, done: existing, notes: notes
+                from: source, to: target, with: translator, done: existing, title: title, notes: notes
             ) { step in
                 let newlyDone = step.done.count - existing.count
                 let elapsed = Date().timeIntervalSince(started)
@@ -122,7 +122,7 @@ final class SubtitleJob: ObservableObject {
                 defer { Task { await translator.stop() } }
                 let result = try await SubtitleTranslator.translate(
                     cues, from: source == Languages.auto ? "en" : source, to: target, with: translator, existing: existing,
-                    notes: CharacterNotes.get(for: input)
+                    title: FilmTitle.from(input), notes: CharacterNotes.get(for: input)
                 ) { progress in
                     Task { @MainActor in
                         guard let self, self.isWorking else { return }

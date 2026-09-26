@@ -19,6 +19,7 @@ struct WelcomeView: View {
     final class Flow: ObservableObject {
         @Published var step: Step
         @Published var permission = AudioPermission.status()
+        @Published var showsCloud = false
 
         init(step: Step) { self.step = step }
     }
@@ -34,6 +35,8 @@ struct WelcomeView: View {
 
     /// Bumped when the tour changes enough that existing users should see it once.
     static let tourVersion = 2
+    /// Off for `--snapshot`, which renders the tour without anyone seeing it.
+    nonisolated(unsafe) static var recordsTour = true
 
     static var hasSeenTour: Bool {
         UserDefaults.standard.integer(forKey: "tourSeenVersion") >= tourVersion
@@ -61,7 +64,7 @@ struct WelcomeView: View {
         .onAppear {
             store.refresh()
             // Seen once: later launches open the panel instead (the "?" reopens the tour).
-            UserDefaults.standard.set(WelcomeView.tourVersion, forKey: "tourSeenVersion")
+            if WelcomeView.recordsTour { UserDefaults.standard.set(WelcomeView.tourVersion, forKey: "tourSeenVersion") }
         }
     }
 
@@ -171,7 +174,7 @@ struct WelcomeView: View {
     private var translation: some View {
         stepLayout(
             title: "Choose your language and a translator",
-            subtitle: "The translation model turns the words into your subtitle language, offline on this Mac."
+            subtitle: "The translator turns the words into your subtitle language. Download an offline model (runs on this Mac), or use a cloud AI with your own key, or both."
         ) {
             Picker("Subtitles in", selection: $state.targetLanguage) {
                 ForEach(Languages.all) { Text($0.name).tag($0.code) }
@@ -180,10 +183,26 @@ struct WelcomeView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.bottom, 4)
             ForEach(ModelCatalog.translation) { ModelCard(model: $0, store: store, compact: true) }
-            NoticeRow(symbol: "icloud",
-                      text: "Want more natural wording? Later you can add a cloud AI translator with your own key in Models › Cloud. It's optional; offline stays the default.")
+            cloudChoice
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.top, 4)
+                .padding(.top, 6)
+        }
+    }
+
+    /// The optional cloud translator, set up right here rather than later in Models.
+    @ViewBuilder
+    private var cloudChoice: some View {
+        if flow.showsCloud || store.cloudProvider != nil {
+            CloudSection(store: store)
+        } else {
+            VStack(alignment: .leading, spacing: 6) {
+                Button {
+                    withAnimation(.easeOut(duration: 0.15)) { flow.showsCloud = true }
+                } label: {
+                    Label("Use a cloud AI instead (your own key)", systemImage: "icloud")
+                }
+                HelpNote("More natural wording: it reads the whole script, keeps names and picks casual or polite speech. Needs an API key from a provider such as OpenRouter or Groq (both have free tiers). Offline stays the default; you can also set this up later in Models.")
+            }
         }
     }
 
@@ -349,7 +368,11 @@ struct WelcomeView: View {
     }
 
     private var hasSpeechChoice: Bool { hasChoice(in: ModelCatalog.speech) }
-    private var hasTranslationChoice: Bool { hasChoice(in: ModelCatalog.translation) }
+    /// A downloaded (or downloading) offline model, or a cloud translator that's set up and chosen.
+    private var hasTranslationChoice: Bool {
+        hasChoice(in: ModelCatalog.translation)
+            || store.cloudProvider.map { store.configuredCloud.contains($0) } == true
+    }
     private var isDownloading: Bool { ModelCatalog.all.contains(where: isDownloading) }
 
     private func isDownloading(_ model: ModelInfo) -> Bool {

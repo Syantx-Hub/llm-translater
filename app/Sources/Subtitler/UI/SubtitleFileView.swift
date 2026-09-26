@@ -49,7 +49,8 @@ struct SubtitleFileView: View {
             if let provider = models.cloudProvider, job.input != nil, !job.isWorking, !isFinished {
                 CloudEstimateView(estimate: job.estimate(target: state.targetLanguage, batchSize: CloudTranslator.defaultBatchSize,
                                                          limits: models.cloudConfig.limits(for: provider)),
-                                  provider: provider, freeTier: models.cloudConfig.usesFreeTier(provider))
+                                  provider: provider, freeTier: models.cloudConfig.usesFreeTier(provider),
+                                  model: models.cloudConfig.model(for: provider))
             }
             if models.cloudProvider != nil, job.input != nil, !isFinished {
                 CharacterNotesField(file: job.input)
