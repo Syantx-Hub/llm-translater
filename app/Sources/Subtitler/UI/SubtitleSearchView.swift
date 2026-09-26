@@ -146,7 +146,7 @@ struct SubtitleSearchView: View {
                 }
                 .padding(.vertical, 2)
             }
-            .frame(minHeight: 240)
+            .frame(minHeight: 160)
             .overlay {
                 if search.results.isEmpty, !search.isSearching {
                     VStack(spacing: 6) {
@@ -167,7 +167,7 @@ struct SubtitleSearchView: View {
             }
         }
         .padding(20)
-        .frame(width: 560, height: 600)
+        .frame(width: 560, height: ScreenFit.height(600))
         .onAppear {
             if state.sourceLanguage != Languages.auto { search.language = state.sourceLanguage }
         }

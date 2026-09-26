@@ -45,16 +45,19 @@ struct WelcomeView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            content
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                .padding(.horizontal, 32)
-                .padding(.top, 28)
+            // The steps scroll on short screens; the footer's buttons always stay in view.
+            ScrollView {
+                content
+                    .frame(maxWidth: .infinity, alignment: .top)
+                    .padding(.horizontal, 32)
+                    .padding(.vertical, 28)
+            }
             Divider()
             footer
                 .padding(.horizontal, 24)
                 .padding(.vertical, 14)
         }
-        .frame(width: 640, height: 680)
+        .frame(width: 640, height: ScreenFit.height(680))
         .onAppear {
             store.refresh()
             // Seen once: later launches open the panel instead (the "?" reopens the tour).
@@ -320,10 +323,8 @@ struct WelcomeView: View {
                 Text(title).font(.title2.weight(.semibold))
                 Text(subtitle).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
-            ScrollView {
-                VStack(spacing: 10, content: content)
-                    .padding(.bottom, 12)
-            }
+            VStack(spacing: 10, content: content)
+                .padding(.bottom, 12)
         }
     }
 

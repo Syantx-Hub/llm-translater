@@ -21,7 +21,7 @@ struct ModelsView: View {
             }
             .padding(24)
         }
-        .frame(minWidth: 620, idealWidth: 700, minHeight: 520, idealHeight: 760)
+        .frame(minWidth: 620, idealWidth: 700, minHeight: ScreenFit.height(520), idealHeight: ScreenFit.height(760))
         .onAppear { store.refresh(); store.refreshCloud() }
     }
 

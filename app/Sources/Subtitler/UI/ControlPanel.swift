@@ -13,9 +13,37 @@ struct ControlPanel: View {
 
     private var locked: Bool { state.isRunning || state.isBusy }
 
+    /// The scrolling middle's natural height, measured, so the panel is only as tall as
+    /// its content until that no longer fits on screen.
+    @StateObject private var contentHeight = Measured()
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
+                .padding([.horizontal, .top], 14)
+            ScrollView {
+                middle
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 2)
+                    .background(GeometryReader { geometry in
+                        Color.clear.preference(key: HeightKey.self, value: geometry.size.height)
+                    })
+            }
+            .frame(height: min(contentHeight.value, maxScrollHeight))
+            .onPreferenceChange(HeightKey.self) { contentHeight.value = $0 }
+            VStack(alignment: .leading, spacing: 12) {
+                Divider()
+                footer
+            }
+            .padding([.horizontal, .bottom], 14)
+        }
+        .frame(width: 360)
+        .onAppear { models.refreshCloud() }
+    }
+
+    /// Everything between the header and the footer; scrolls when the screen is short.
+    private var middle: some View {
+        VStack(alignment: .leading, spacing: 12) {
             if models.needsSetup && !locked {
                 setupPrompt
             } else {
@@ -30,12 +58,13 @@ struct ControlPanel: View {
                 }
             }
             messages
-            Divider()
-            footer
         }
-        .padding(14)
-        .frame(width: 360)
-        .onAppear { models.refreshCloud() }
+    }
+
+    /// Room left on screen for the scrolling part, below the menu bar and above the Dock,
+    /// after the header and footer.
+    private var maxScrollHeight: CGFloat {
+        max(240, ScreenFit.visibleHeight - 150)
     }
 
     // MARK: Header
@@ -355,4 +384,14 @@ struct ControlPanel: View {
         default: .secondary
         }
     }
+}
+
+private struct HeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
+/// `@State` stand-in for a measured size (the macro needs Xcode).
+final class Measured: ObservableObject {
+    @Published var value: CGFloat = 400
 }

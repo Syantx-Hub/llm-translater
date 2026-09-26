@@ -16,6 +16,15 @@ struct SubtitleFileView: View {
     }
 
     var body: some View {
+        VStack(spacing: 0) {
+            ScrollView { form.padding(24) }
+            Divider()
+            actions.padding(.horizontal, 24).padding(.vertical, 14)
+        }
+        .frame(width: 520, height: ScreenFit.height(600))
+    }
+
+    private var form: some View {
         VStack(alignment: .leading, spacing: 18) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Save a translated copy").font(.title2.weight(.semibold))
@@ -44,11 +53,7 @@ struct SubtitleFileView: View {
             }
 
             status
-            Spacer(minLength: 0)
-            actions
         }
-        .padding(24)
-        .frame(width: 520, height: 560)
     }
 
     private var dropZone: some View {

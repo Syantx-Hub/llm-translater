@@ -9,7 +9,7 @@ struct CaptionsView: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
-            VStack(alignment: .leading, spacing: 12) {
+            ScrollView { VStack(alignment: .leading, spacing: 12) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("How subtitles look").font(.title2.weight(.semibold))
                     Text("Every change shows in the preview at once, at your screen's real proportions.")
@@ -25,11 +25,11 @@ struct CaptionsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                Spacer()
                 Button("Reset to defaults") { style.reset() }
+                    .padding(.top, 8)
             }
             .frame(width: previewWidth)
-            .padding(20)
+            .padding(20) }
 
             Divider()
 
@@ -82,7 +82,7 @@ struct CaptionsView: View {
             .formStyle(.grouped)
             .frame(width: 400)
         }
-        .frame(height: 700)
+        .frame(height: ScreenFit.height(700))
         .onDisappear { state.previewOnScreen = false }
     }
 

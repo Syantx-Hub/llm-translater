@@ -104,3 +104,11 @@ import Testing
         #expect(CaptionSlot.slots(lines: [], draft: nil, lineCount: 2, showDrafts: true).isEmpty)
     }
 }
+
+@Suite struct ScreenFitTests {
+    @Test func windowsNeverRunPastTheScreen() {
+        #expect(ScreenFit.height(680, visible: 1000) == 680)          // fits: design height
+        #expect(ScreenFit.height(680, visible: 700) == 640)           // short screen: what fits
+        #expect(ScreenFit.height(680, visible: 300) == 360)           // tiny: a usable minimum, scrolling
+    }
+}

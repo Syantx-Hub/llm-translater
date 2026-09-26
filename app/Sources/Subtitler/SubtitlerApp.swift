@@ -86,7 +86,7 @@ struct SubtitlerApp: App {
         Window("Models", id: "models") {
             ModelsView(store: models)
         }
-        .defaultSize(width: 700, height: 760)
+        .defaultSize(width: 700, height: ScreenFit.height(760))
     }
 }
 

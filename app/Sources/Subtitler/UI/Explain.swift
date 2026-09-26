@@ -63,6 +63,19 @@ extension CaptionMode {
     }
 }
 
+/// Window heights that never run past the screen: the design height where it fits,
+/// otherwise what the screen has room for (the content scrolls).
+enum ScreenFit {
+    /// The visible height of the screen the window will open on, below the menu bar and
+    /// above the Dock.
+    static var visibleHeight: CGFloat { (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame.height ?? 800 }
+
+    /// - Parameter chrome: room for the title bar and a margin.
+    static func height(_ ideal: CGFloat, chrome: CGFloat = 60, visible: CGFloat = visibleHeight) -> CGFloat {
+        min(ideal, max(360, visible - chrome))
+    }
+}
+
 /// A labelled control with its label in a fixed column, so every popup in a panel starts
 /// at the same edge (the grouped-form look, in a panel too narrow for a Form).
 struct FieldRow<Control: View>: View {
