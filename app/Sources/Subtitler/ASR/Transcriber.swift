@@ -13,18 +13,10 @@ struct Transcript: Equatable, Sendable {
 
 /// Speech-to-text as the pipeline sees it; tests substitute a fake.
 protocol SpeechTranscribing: Sendable {
-    /// - Parameters:
-    ///   - language: Whisper code, or nil to auto-detect. Returns nil for no speech.
-    ///   - prompt: recent lines, so names and terms are heard consistently.
-    func transcribe(_ samples: [Float], language: String?, prompt: String?) async throws -> Transcript?
+    /// - Parameter language: Whisper code, or nil to auto-detect. Returns nil for no speech.
+    func transcribe(_ samples: [Float], language: String?) async throws -> Transcript?
     /// The spoken language of `samples` (Whisper code), without transcribing them.
     func detectLanguage(_ samples: [Float]) async throws -> String?
-}
-
-extension SpeechTranscribing {
-    func transcribe(_ samples: [Float], language: String?) async throws -> Transcript? {
-        try await transcribe(samples, language: language, prompt: nil)
-    }
 }
 
 /// On-device speech recognition with WhisperKit (CoreML on the Neural Engine / GPU).
@@ -68,12 +60,12 @@ actor Transcriber: SpeechTranscribing {
 
     /// - Parameter language: Whisper code, or nil to auto-detect.
     /// Cancelling the calling task stops the decode early.
-    func transcribe(_ samples: [Float], language: String?, prompt: String?) async throws -> Result? {
+    func transcribe(_ samples: [Float], language: String?) async throws -> Result? {
         let previous = tail
         let work = Task { () async throws -> Result? in
             await previous?.value
             try Task.checkCancellation()
-            return try await self.decode(samples, language: language, prompt: prompt)
+            return try await self.decode(samples, language: language)
         }
         tail = Task { _ = try? await work.value }
         return try await withTaskCancellationHandler {
@@ -98,20 +90,13 @@ actor Transcriber: SpeechTranscribing {
         }
     }
 
-    private func decode(_ samples: [Float], language: String?, prompt: String?) async throws -> Result? {
+    private func decode(_ samples: [Float], language: String?) async throws -> Result? {
         guard let whisper else { return nil }
         var options = DecodingOptions()
         options.task = .transcribe
         options.language = language
         options.detectLanguage = language == nil
         options.usePrefillPrompt = language != nil
-        if let prompt, !prompt.isEmpty, let tokenizer = whisper.tokenizer {
-            // Whisper's context mechanism: earlier text before the start token. Kept to the
-            // last ~100 tokens, as longer prompts make Whisper echo them on silence.
-            let tokens = tokenizer.encode(text: " " + prompt).filter { $0 < tokenizer.specialTokens.specialTokenBegin }
-            options.promptTokens = Array(tokens.suffix(100))
-            options.usePrefillPrompt = true
-        }
         options.skipSpecialTokens = true
         options.withoutTimestamps = true
         options.suppressBlank = true

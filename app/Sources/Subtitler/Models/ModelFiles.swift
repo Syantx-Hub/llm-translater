@@ -26,7 +26,12 @@ enum ModelFiles {
     static var rootOverride: URL?
 
     static var root: URL {
-        rootOverride ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        if let rootOverride { return rootOverride }
+        // Development: benchmark models without touching the real library.
+        if let custom = ProcessInfo.processInfo.environment["SUBTITLER_MODELS_DIR"] {
+            return URL(fileURLWithPath: custom, isDirectory: true)
+        }
+        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Subtitler/Models", isDirectory: true)
     }
 

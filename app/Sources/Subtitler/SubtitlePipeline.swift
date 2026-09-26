@@ -94,8 +94,12 @@ actor SubtitlePipeline {
     /// The newest source text of the line being spoken.
     private var liveSource: String?
 
-    /// Sentences of the current streaming phrase already shown as finished lines.
-    private var committedSentences = 0
+    /// Letters and digits of the current streaming phrase already shown as finished lines.
+    /// Counting characters (not sentences) lets a pause commit words without punctuation.
+    private var committedCharacters = 0
+    /// A pause was heard while Apple Speech transcribes: commit the live words on the next
+    /// update (or shortly), without waiting for Apple to finish the phrase.
+    private var pauseCommitPending = false
 
     init(transcriber: any SpeechTranscribing, translator: Translator, source: String?, target: String?,
          translateDrafts: Bool = true, hidesUnclearLines: Bool = true, emit: @escaping @Sendable (Update) -> Void) {
@@ -151,6 +155,10 @@ actor SubtitlePipeline {
             finals.append(Final(samples: samples, trailingSilence: trailingSilence, endedAt: Date()))
             latestDraft = nil
             cancelRegularDraft()
+        case .partial(_, false) where target != nil:
+            // Translating shows finished lines only, so drafts while someone speaks would
+            // just keep Whisper busy when the pause draft (the one a final reuses) arrives.
+            return
         case .partial(let samples, let isPause):
             latestDraft = (samples, isPause)
             // A new pause means speech resumed since any draft now decoding, so that draft
@@ -220,7 +228,9 @@ actor SubtitlePipeline {
     private func checkLanguage(of event: SpeechSegmenter.Event) {
         let samples: [Float]
         switch event {
-        case .final(let audio, _): samples = audio
+        case .final(let audio, let trailingSilence):
+            if trailingSilence > 0 { speakerPaused() }
+            samples = audio
         case .partial(let audio, true): samples = audio
         case .partial: return
         }
@@ -237,14 +247,6 @@ actor SubtitlePipeline {
 
     private func isUnclear(_ transcript: Transcript) -> Bool {
         transcript.looksRepetitive || (transcript.confidence.map { $0 < Self.minWhisperConfidence } ?? false)
-    }
-
-    /// Recent lines for Whisper's prompt, so names and terms are heard consistently. Left
-    /// out while the language may be changing, since a prompt pulls Whisper towards the
-    /// language it's written in.
-    private var prompt: String? {
-        guard source != nil, languageCandidate == nil, !context.isEmpty else { return nil }
-        return context.suffix(2).joined(separator: " ")
     }
 
     /// Auto-detect decodes without a language hint so a change of language is noticed.
@@ -322,21 +324,60 @@ actor SubtitlePipeline {
     /// speech detection, so no segmenter or Whisper is involved.
     func submitVolatile(_ text: String) {
         guard !cancelled, !text.isEmpty else { return }
-        var sentences = Self.sentences(in: text)
-        sentences.removeFirst(min(committedSentences, sentences.count))
-        // Apple Speech can keep a whole paragraph in one phrase. Once the speaker has moved
-        // on to another sentence, the ones before it are finished: show them as lines now
-        // rather than letting the live line grow until the phrase ends.
-        if sentences.count > 1 {
-            let finished = sentences.dropLast()
-            committedSentences += finished.count
+        var sentences = Self.sentences(in: uncommitted(text))
+        // Apple Speech only finalizes a phrase after a stretch of silence, which a film's
+        // background sound can delay by seconds, and it can keep a paragraph in one phrase.
+        // A sentence it has already closed with punctuation is finished, so show it as a
+        // line now instead of waiting for the phrase to end.
+        let lastIsFinished = sentences.last.map(Self.endsSentence) ?? false
+        if sentences.count > 1 || (lastIsFinished && !sentences.isEmpty) {
+            let finished = lastIsFinished ? sentences[...] : sentences.dropLast()
             sentences.removeFirst(finished.count)
             commitEarly(finished.joined(separator: " "))
         }
-        showDraft(sentences.joined(separator: " "))
+        let rest = sentences.joined(separator: " ")
+        if pauseCommitPending, !rest.isEmpty {
+            // The speaker paused: whatever is left of the phrase is a finished line.
+            pauseCommitPending = false
+            commitEarly(rest)
+            emit(.draft(nil))
+            return
+        }
+        if rest.isEmpty { emit(.draft(nil)) } else { showDraft(rest) }
+    }
+
+    /// Our VAD heard the speaker stop while Apple Speech transcribes. Apple only ends a
+    /// phrase after real silence, which background sound in films can delay by seconds.
+    private func speakerPaused() {
+        guard liveSource?.isEmpty == false else { return }
+        pauseCommitPending = true
+        // Apple sends volatile updates about once a second; if none comes, use what we have.
+        Task {
+            try? await Task.sleep(for: .milliseconds(600))
+            guard pauseCommitPending, let rest = liveSource, !rest.isEmpty, !cancelled else { return }
+            pauseCommitPending = false
+            commitEarly(rest)
+            emit(.draft(nil))
+        }
+    }
+
+    /// `text` without the part already shown as lines.
+    private func uncommitted(_ text: String) -> String {
+        guard committedCharacters > 0 else { return text }
+        var seen = 0
+        for index in text.indices where !SubtitleSync.normalize(String(text[index])).isEmpty {
+            seen += 1
+            if seen >= committedCharacters {
+                // Drop the separator after the committed part (", " or ". "), keep the rest.
+                let rest = text[text.index(after: index)...]
+                return String(rest.drop { $0.isWhitespace || $0.isPunctuation })
+            }
+        }
+        return ""
     }
 
     private func commitEarly(_ text: String) {
+        committedCharacters += SubtitleSync.normalize(text).count
         let inFlight = draftTranslation
         utterance += 1
         pendingDraftText = nil
@@ -351,8 +392,9 @@ actor SubtitlePipeline {
     func submitFinal(_ text: String, speechEndedAt: Date, confidence: Double? = nil) {
         guard !cancelled, !text.isEmpty else { return }
         Trace.log("stream final confidence \(confidence.map { String(format: "%.2f", $0) } ?? "-")")
+        pauseCommitPending = false
         if hidesUnclearLines, let confidence, confidence < Self.minAppleConfidence {
-            committedSentences = 0
+            committedCharacters = 0
             utterance += 1
             pendingDraftText = nil
             draftTranslation?.task.cancel()
@@ -362,10 +404,8 @@ actor SubtitlePipeline {
             dropUnclear(text)
             return
         }
-        var sentences = Self.sentences(in: text)
-        sentences.removeFirst(min(committedSentences, sentences.count))
-        committedSentences = 0
-        let text = sentences.joined(separator: " ")
+        let text = uncommitted(text)
+        committedCharacters = 0
         guard !text.isEmpty else {
             emit(.draft(nil))
             return
@@ -417,7 +457,7 @@ actor SubtitlePipeline {
             text = reusable.text
         } else {
             do {
-                guard let result = try await transcriber.transcribe(final.samples, language: decodeLanguage, prompt: prompt) else {
+                guard let result = try await transcriber.transcribe(final.samples, language: decodeLanguage) else {
                     emit(.draft(nil))
                     return
                 }
@@ -512,6 +552,12 @@ actor SubtitlePipeline {
             parts.append(try await translator.translate(sentence, from: source, to: target, context: context))
         }
         return parts.joined(separator: " ")
+    }
+
+    /// True when text ends with sentence-ending punctuation (not just a comma).
+    static func endsSentence(_ text: String) -> Bool {
+        guard let last = text.trimmingCharacters(in: .whitespaces).last else { return false }
+        return [".", "!", "?", "。", "！", "？", "။"].contains(last)
     }
 
     /// Splits text into the part made of finished sentences and clauses, safe to translate

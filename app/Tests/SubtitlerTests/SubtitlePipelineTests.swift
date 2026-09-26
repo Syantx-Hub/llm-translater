@@ -230,16 +230,15 @@ import Testing
         #expect(lines(updates).map(\.original) == ["Clearly heard."])
     }
 
-    @Test func recentLinesArePassedToWhisperAsContext() async {
-        let transcriber = FakeTranscriber(script: [100: "I'm Kim Jisoo.", 200: "Jisoo is my name.", 300: "Nice to meet you."])
-        let (pipeline, _) = pipeline(transcriber: transcriber, translateDrafts: false)
+    @Test func translateModeSkipsDraftsWhileSomeoneSpeaks() async {
+        let transcriber = FakeTranscriber(script: [500: "Where", 900: "Where have you been?"])
+        let (pipeline, _) = pipeline(transcriber: transcriber)
 
-        for count in [100, 200, 300] {
-            await pipeline.submit(.final(samples(count), trailingSilence: 0))
-            await pipeline.flush()
-        }
+        await pipeline.submit(.partial(samples(500), isPause: false))
+        await pipeline.submit(.partial(samples(900), isPause: true))
+        await pipeline.flush()
 
-        #expect(await transcriber.prompts == [nil, "I'm Kim Jisoo.", "I'm Kim Jisoo. Jisoo is my name."])
+        #expect(await transcriber.calls == [900]) // only the pause draft is decoded
     }
 
     @Test func silentFinalClearsTheDraftAndAddsNoLine() async {
@@ -382,6 +381,21 @@ import Testing
         await pipeline.flush()
         // The final only adds what wasn't shown yet.
         #expect(lines(updates).map(\.original) == ["Where were you?", "I waited for you."])
+    }
+
+    /// Apple Speech waits for silence before finalizing, which background sound delays.
+    @Test func aPunctuatedSentenceShowsWithoutWaitingForTheFinal() async {
+        let (pipeline, updates) = pipeline(transcriber: FakeTranscriber(script: [:]), translateDrafts: false)
+
+        await pipeline.submitVolatile("Where have you been")
+        await pipeline.submitVolatile("Where have you been all night?")
+        await pipeline.flush()
+        #expect(lines(updates).map(\.original) == ["Where have you been all night?"])
+
+        // The final arrives later and adds nothing new.
+        await pipeline.submitFinal("Where have you been all night?", speechEndedAt: Date())
+        await pipeline.flush()
+        #expect(lines(updates).count == 1)
     }
 
     @Test func streamingTranscribeOnlyShowsWordsAsTheyArrive() async {

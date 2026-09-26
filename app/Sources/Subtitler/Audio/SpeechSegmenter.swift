@@ -1,6 +1,7 @@
 import Foundation
 
-/// Splits a live 16 kHz stream into utterances with an energy-based VAD.
+/// Splits a live 16 kHz stream into utterances, using a voice-activity detector (Silero)
+/// or, without one, frame energy against an adaptive noise floor.
 ///
 /// While someone is speaking it emits `.partial` with the utterance so far (for grey draft
 /// text), and `.final` once they pause or the utterance hits `maxSeconds`. Only speech is
@@ -33,16 +34,25 @@ final class SpeechSegmenter {
     var onEvent: ((Event) -> Void)?
 
     private let sampleRate = Int(SystemAudioCapture.sampleRate)
-    private let frameSize = 480 // 30 ms
-    private let preRollFrames = 10 // keep 300 ms before speech onset
-    private let minSpeechFrames = 8 // ignore blips shorter than 240 ms
-    private let pauseDraftFrames = 4 // a 120 ms pause triggers a draft of everything said
+    private let detector: SpeechDetector?
+    private let frameSize: Int
+    private let preRollFrames: Int // keep ~300 ms before speech onset
+    private let minSpeechFrames: Int // ignore blips shorter than ~240 ms
+    private let pauseDraftFrames: Int // a ~120 ms pause triggers a draft of everything said
     private let endSilenceFrames: Int
     private let partialEverySamples: Int
     private let maxSeconds: Double
 
-    init(tuning: Tuning = .balanced) {
-        endSilenceFrames = max(1, tuning.endSilenceMS / 30)
+    /// - Parameter detector: decides speech per frame; nil uses frame energy (30 ms frames).
+    init(tuning: Tuning = .balanced, detector: SpeechDetector? = nil) {
+        self.detector = detector
+        frameSize = detector?.frameSize ?? 480
+        let frameMS = Double(frameSize) / 16
+        func frames(_ ms: Double) -> Int { max(1, Int((ms / frameMS).rounded())) }
+        preRollFrames = frames(300)
+        minSpeechFrames = frames(240)
+        pauseDraftFrames = frames(120)
+        endSilenceFrames = frames(Double(tuning.endSilenceMS))
         partialEverySamples = tuning.draftEveryMS * 16
         maxSeconds = tuning.maxSeconds
     }
@@ -71,6 +81,7 @@ final class SpeechSegmenter {
     func reset() {
         pending.removeAll()
         preRoll.removeAll()
+        detector?.reset()
         endUtterance(emit: false)
     }
 
@@ -83,7 +94,7 @@ final class SpeechSegmenter {
             // music bed or ambience. Let the floor rise to it so the utterance can end.
             noiseFloor = noiseFloor * 0.9 + quietest * 0.1
         }
-        let isSpeech = energy > max(noiseFloor * 6, 2e-5)
+        let isSpeech = detector?.isSpeech(frame) ?? (energy > max(noiseFloor * 6, 2e-5))
 
         if !inSpeech {
             // Track the background level slowly, so steady music raises the threshold.

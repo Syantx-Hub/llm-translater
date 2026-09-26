@@ -31,7 +31,13 @@ enum FileRunner {
             let samples = try loadAudio(URL(fileURLWithPath: path))
             print("[audio] \(String(format: "%.1f", Double(samples.count) / SystemAudioCapture.sampleRate)) s")
 
-            guard let speech = ModelCatalog.model(id: speechID), speech.kind == .speech else {
+            // Any WhisperKit variant can be benchmarked, not just the catalog's.
+            let adHoc = speechID.hasPrefix("openai_whisper") || speechID.hasPrefix("distil-whisper")
+                ? ModelInfo(id: speechID, kind: .speech, name: speechID, summary: "", strengths: [],
+                            source: .whisperKit(variant: speechID, tokenizer: speechID.contains("small") ? .small : .largev3),
+                            sizeMB: 0, speed: 0, quality: 0, license: "MIT", commercialUse: true, minRAMGB: 8, englishOnly: false)
+                : nil
+            guard let speech = ModelCatalog.model(id: speechID) ?? adHoc, speech.kind == .speech else {
                 print("error: unknown speech model \(speechID)")
                 return 2
             }
@@ -66,6 +72,7 @@ enum FileRunner {
                     print("[\(elapsed())] draft\(caption.isTranslation ? "*" : " ") \(caption.text)")
                 case .draft: break
                 case .line(let original, let translation, let latency):
+                    Trace.log("line shown: \(original)")
                     print("[\(elapsed())] line   \(original)\n                  -> \(translation)  (lag \(String(format: "%.2f", latency)) s)")
                 case .detectedLanguage(let code): print("[\(elapsed())] detected language: \(code)")
                 case .unclear(let text): print("[\(elapsed())] hidden (unclear) \(text)")
@@ -82,13 +89,14 @@ enum FileRunner {
             }
 
             let (events, sink) = AsyncStream<SpeechSegmenter.Event>.makeStream()
-            let segmenter = SpeechSegmenter(tuning: responsiveness.tuning)
+            let segmenter = SpeechSegmenter(tuning: responsiveness.tuning, detector: SileroVAD())
             segmenter.onEvent = { sink.yield($0) }
             let pump = Task { for await event in events { await pipeline.submit(event) } }
 
             // 100 ms chunks, like the capture callback; trailing silence flushes the last line.
             let chunk = Int(SystemAudioCapture.sampleRate) / 10
             let padded = samples + [Float](repeating: 0, count: Int(SystemAudioCapture.sampleRate))
+            Trace.log("audio playback starts")
             for offset in stride(from: 0, to: padded.count, by: chunk) {
                 segmenter.append(Array(padded[offset..<min(offset + chunk, padded.count)]))
                 if realtime { try await Task.sleep(for: .milliseconds(100)) }
@@ -123,10 +131,21 @@ enum FileRunner {
                 }
             }
         }
+        // As in the app: our VAD tells the pipeline when the speaker pauses.
+        await pipeline.setWhisperTranscribes(false)
+        let (segments, segmentSink) = AsyncStream<SpeechSegmenter.Event>.makeStream()
+        let segmenter = SpeechSegmenter(detector: SileroVAD())
+        segmenter.onEvent = { segmentSink.yield($0) }
+        let segmentPump = Task { for await event in segments { await pipeline.submit(event) } }
+        defer { segmentSink.finish(); segmentPump.cancel() }
+
         let chunk = Int(SystemAudioCapture.sampleRate) / 10
         let padded = samples + [Float](repeating: 0, count: Int(SystemAudioCapture.sampleRate))
+        Trace.log("audio playback starts")
         for offset in stride(from: 0, to: padded.count, by: chunk) {
-            recognizer.append(Array(padded[offset..<min(offset + chunk, padded.count)]))
+            let piece = Array(padded[offset..<min(offset + chunk, padded.count)])
+            segmenter.append(piece)
+            recognizer.append(piece)
             if realtime { try await Task.sleep(for: .milliseconds(100)) }
         }
         await recognizer.stop()

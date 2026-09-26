@@ -235,6 +235,19 @@ they exist and reports `.unknown` otherwise. On the ScreenCaptureKit path it use
 
 ## 6. Speech segmentation (VAD)
 
+**Voice activity** comes from Silero VAD (MIT), a small neural model run with ONNX
+Runtime on 32 ms frames (`SileroVAD`: 512 samples plus 64 samples of context, LSTM state
+carried between frames, speech above 0.5 and silence below 0.35). Films rarely go truly
+silent, and an energy threshold can't tell dialogue from a music bed: on a test clip with
+constant background sound, the energy VAD found no pauses at all and merged five
+sentences into one utterance, while Silero found all five, ending within 0.1 s of the
+real ends. The energy detector below remains as a fallback (and for tests).
+
+The segmenter always runs. With Whisper it feeds recognition; while Apple Speech
+transcribes it only reports pauses (so a line can be committed without waiting for
+Apple, which finalizes after real silence) and samples the language.
+
+
 `SpeechSegmenter` turns the continuous stream into **utterances** and emits two kinds of
 event:
 
@@ -438,10 +451,9 @@ Translation can't fix misheard words, so two things reduce them:
   than shown and translated; the panel counts them. On an M2, clear speech scored
   0.92–0.98 with Whisper, while speech buried in noise came back as unrelated words at
   0.56. The filter can't catch a *confident* mishearing: Apple heard 받았어 as 맞았어 at 0.93.
-- **Context prompt.** The last two finished lines are passed to Whisper as its prompt
-  (`promptTokens`, at most 100 tokens) so names and terms are heard consistently. It is
-  left out while a change of language may be under way, because a prompt pulls Whisper
-  towards the language it's written in.
+
+Passing recent lines to Whisper as a prompt (for consistent names) was tried and removed:
+with WhisperKit it made re-decoded finals come back empty, so lines went missing.
 
 ### Streaming recognizers
 

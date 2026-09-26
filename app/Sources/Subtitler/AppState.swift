@@ -287,23 +287,25 @@ final class AppState: ObservableObject {
             } else {
                 capture.onSamples = { router.send($0) }
             }
+            // A segmenter always runs: it feeds Whisper, or, while Apple Speech transcribes,
+            // tells the pipeline when the speaker pauses and which language is spoken.
+            let (events, sink) = AsyncStream<SpeechSegmenter.Event>.makeStream()
+            let segmenter = SpeechSegmenter(tuning: responsiveness.tuning, detector: SileroVAD())
+            segmenter.onEvent = { sink.yield($0) }
+            owned.eventPump = Task {
+                for await event in events { await pipeline.submit(event) }
+            }
+            let segmenterSink: ([Float]) -> Void = { segmenter.append($0) }
+            owned.segmenterSink = segmenterSink
             switch engine {
             case .whisper(_, let handOver):
                 owned.followsLanguage = handOver
-                // One ordered stream from the capture queue to the pipeline actor.
-                let (events, sink) = AsyncStream<SpeechSegmenter.Event>.makeStream()
-                let segmenter = SpeechSegmenter(tuning: responsiveness.tuning)
-                segmenter.onEvent = { sink.yield($0) }
-                owned.eventPump = Task {
-                    for await event in events { await pipeline.submit(event) }
-                }
-                let segmenterSink: ([Float]) -> Void = { segmenter.append($0) }
-                owned.segmenterSink = segmenterSink
                 router.route(to: [segmenterSink])
             case .apple(let locale):
                 phase = .loading("Preparing Apple Speech for \(Self.name(of: locale))…")
-                let sink = try await startAppleSpeech(locale, pipeline: pipeline, session: id, into: &owned, showProgress: true)
-                router.route(to: [sink])
+                let appleSink = try await startAppleSpeech(locale, pipeline: pipeline, session: id, into: &owned, showProgress: true)
+                await pipeline.setWhisperTranscribes(false)
+                router.route(to: [segmenterSink, appleSink])
                 try checkSession(id)
             }
             capture.onStop = { [weak self] error in

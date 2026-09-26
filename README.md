@@ -80,6 +80,7 @@ speaker stops. Translation runs sentence by sentence with a repetition guard.
 
 | Stage | Models | License |
 |---|---|---|
+| Voice activity | Silero VAD (bundled) | MIT |
 | Speech | Apple Speech (built in, macOS 26), Whisper Large v3 Turbo, Turbo compact, Large v3, Small, Distil-Large v3 (English) | Apple / MIT |
 | Translation | MADLAD-400 3B Q4_K_M (default), Q8_0 | Apache 2.0 |
 

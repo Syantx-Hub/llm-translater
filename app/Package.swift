@@ -17,6 +17,8 @@ let package = Package(
         // Pinned for WhisperKit's transitive use: 1.4+ calls Swift runtime functions
         // (swift_initBorrow) that shipping macOS versions don't have, so the app fails to launch.
         .package(url: "https://github.com/apple/swift-collections.git", "1.1.0"..<"1.4.0"),
+        // Runs the Silero voice-activity model (MIT, bundled in Resources).
+        .package(url: "https://github.com/microsoft/onnxruntime-swift-package-manager.git", exact: "1.19.2"),
     ],
     targets: [
         // Prebuilt llama.cpp with Metal, used to run GGUF translation models natively.
@@ -29,9 +31,11 @@ let package = Package(
             name: "Subtitler",
             dependencies: [
                 .product(name: "WhisperKit", package: "WhisperKit"),
+                .product(name: "onnxruntime", package: "onnxruntime-swift-package-manager"),
                 "llama",
             ],
             path: "Sources/Subtitler",
+            resources: [.copy("Resources/silero_vad.onnx")],
             linkerSettings: [
                 // llama.framework ships in Subtitler.app/Contents/Frameworks.
                 .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"]),
