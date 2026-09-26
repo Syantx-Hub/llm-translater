@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// In-progress text for the line being spoken. Translated drafts show in the caption
-/// font; untranslated ones as smaller grey source text.
+/// In-progress text for the line being spoken, shown in the same style as finished lines.
+/// `isTranslation` is false while only the source words are known.
 struct DraftCaption: Equatable {
     let text: String
     let isTranslation: Bool
@@ -73,27 +73,24 @@ struct CaptionLayer: View {
     private func content(_ slot: CaptionSlot) -> some View {
         switch slot {
         case .line(let line):
-            Text(line.translation)
-                .font(style.captionFont(for: language, scale: scale))
-                .foregroundStyle(style.textColor)
-                .lineSpacing(style.fontSize * style.lineSpacing * scale)
+            captionText(line.translation)
             if style.showOriginal, line.original != line.translation {
                 Text(line.original)
                     .font(.system(size: style.fontSize * style.originalScale * scale))
                     .foregroundStyle(style.textColor.opacity(0.7))
             }
-        case .live(let draft) where draft.isTranslation:
-            // Same font and place as the finished line it turns into; slightly dimmer
-            // while it may still change.
-            Text(draft.text)
-                .font(style.captionFont(for: language, scale: scale))
-                .foregroundStyle(style.textColor.opacity(0.85))
-                .lineSpacing(style.fontSize * style.lineSpacing * scale)
         case .live(let draft):
-            Text(draft.text)
-                .font(.system(size: style.fontSize * 0.6 * scale))
-                .foregroundStyle(style.textColor.opacity(0.6))
+            // Exactly the style of the finished line it turns into, so every caption
+            // setting applies to both and nothing jumps when the line is finished.
+            captionText(draft.text)
         }
+    }
+
+    private func captionText(_ text: String) -> some View {
+        Text(text)
+            .font(style.captionFont(for: language, scale: scale))
+            .foregroundStyle(style.textColor)
+            .lineSpacing(style.fontSize * style.lineSpacing * scale)
     }
 }
 

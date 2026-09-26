@@ -532,8 +532,8 @@ the same box. The text updates in place instead of a new box appearing below. Wi
 default `lineCount` of 1, only that one line is shown.
 
 - A finished line shows the translation and, optionally, the original in a smaller font.
-- Live words that are already translated use the caption font at 85% opacity, so they look
-  like the line they become; untranslated live words are smaller and dimmer.
+- Live words use exactly the finished line's style (font, size, weight, colour, spacing),
+  so every caption setting applies to both and nothing jumps when the line is finished.
 
 It positions everything at the top or bottom, at `offset × height` from the edge, at most
 `maxWidth × width` wide.
