@@ -9,7 +9,7 @@ The app ships with no models. On first launch a setup window walks through choos
 downloading a speech model and a translation model; the **Models** window lets you
 download, switch and delete them later.
 
-For how it all works inside, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+For how it all works inside, and the AI concepts behind each part, see [docs/](docs/README.md): one page per feature.
 
 ## Features
 
@@ -70,7 +70,7 @@ tccutil reset ScreenCapture com.syantxhub.subtitler    # Screen Recording (14.0�
 
 ## Pipeline
 
-Core Audio tap (16 kHz mono) → energy VAD segmenter → WhisperKit on the Neural Engine →
+Core Audio tap (16 kHz mono) → Silero VAD segmenter → Whisper (WhisperKit) or Apple Speech →
 MADLAD-400 via llama.cpp on the GPU → overlay.
 
 The segmenter sends a draft whenever the speaker pauses and at regular intervals while
