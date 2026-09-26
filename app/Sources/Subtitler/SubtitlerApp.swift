@@ -20,6 +20,7 @@ enum Entry {
 }
 
 struct SubtitlerApp: App {
+    @NSApplicationDelegateAdaptor private var appDelegate: AppDelegate
     @StateObject private var models: ModelStore
     @StateObject private var state: AppState
 
@@ -37,6 +38,11 @@ struct SubtitlerApp: App {
         }
         .menuBarExtraStyle(.window)
 
+        Window("Subtitler", id: "main") {
+            ControlPanel(state: state, models: models)
+        }
+        .windowResizability(.contentSize)
+
         Window("Welcome to Subtitler", id: "welcome") {
             WelcomeWindow(models: models, state: state)
         }
@@ -50,7 +56,28 @@ struct SubtitlerApp: App {
     }
 }
 
-/// The menu bar label is created at launch, so it also opens setup on first run.
+/// Opens SwiftUI windows from outside a view (the app delegate). SwiftUI only hands out
+/// `openWindow` inside views, so the menu bar label, which exists from launch, registers it.
+@MainActor
+final class WindowRouter {
+    static let shared = WindowRouter()
+    var openWindow: OpenWindowAction?
+
+    func show(_ id: String) {
+        openWindow?(id: id)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+}
+
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// Opening the app again (Spotlight, Finder, `open`) shows its window. A menu bar
+    /// icon alone is easy to miss, especially behind the notch.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        MainActor.assumeIsolated { WindowRouter.shared.show("main") }
+        return true
+    }
+}
+
 private struct MenuBarIcon: View {
     let running: Bool
     let needsSetup: Bool
@@ -59,9 +86,8 @@ private struct MenuBarIcon: View {
     var body: some View {
         Image(systemName: running ? "captions.bubble.fill" : "captions.bubble")
             .task {
-                guard needsSetup else { return }
-                openWindow(id: "welcome")
-                NSApp.activate(ignoringOtherApps: true)
+                WindowRouter.shared.openWindow = openWindow
+                WindowRouter.shared.show(needsSetup ? "welcome" : "main")
             }
     }
 }

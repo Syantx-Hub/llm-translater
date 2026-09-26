@@ -22,6 +22,7 @@ cp "$BIN_DIR/Subtitler" "$APP/Contents/MacOS/Subtitler"
 cp -R "$BIN_DIR/llama.framework" "$APP/Contents/Frameworks/"
 # SwiftPM resource bundles (e.g. swift-transformers' Hub) are looked up in Contents/Resources.
 find "$BIN_DIR" -maxdepth 1 -name "*.bundle" -exec cp -R {} "$APP/Contents/Resources/" \;
+cp "$APP_DIR/Resources/AppIcon.icns" "$APP/Contents/Resources/"
 sed "s|__REPO_ROOT__|$ROOT|" "$APP_DIR/Resources/Info.plist" > "$APP/Contents/Info.plist"
 
 # Ad-hoc signature. macOS ties the Screen Recording grant to the signature, so after a
