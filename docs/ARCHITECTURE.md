@@ -290,6 +290,11 @@ There are two engines. The session picks one in `AppState.chooseSpeechEngine()`:
   Chinese, French, German, Spanish or Portuguese.
 - **Whisper** is used otherwise. When Apple Speech is selected but can't be used, the
   recommended installed Whisper model takes over, and the panel says why.
+- **Auto-detect with Apple Speech** (on by default, `appleAutoHandover`): the session
+  starts on Whisper, and when the first final line reveals the language, it switches to
+  Apple Speech if Apple supports that language. Captured audio goes through a
+  `SampleRouter`, so the session can re-point it from Whisper's segmenter to the Apple
+  recognizer without restarting capture. Work Whisper already queued still finishes.
 
 ### Apple Speech (streaming)
 
@@ -520,12 +525,15 @@ re-lays out SwiftUI; the window stays where it is.
 
 ### CaptionLayer: one view for the overlay and the preview
 
-`CaptionLayer` draws the captions:
+`CaptionSlot.slots(...)` decides what is on screen: `lineCount` boxes in total, counting
+the line being spoken. The bottom box always has the same identity (`currentID`). While
+someone speaks it shows the live words; when the line is finished, the finished line takes
+the same box. The text updates in place instead of a new box appearing below. With the
+default `lineCount` of 1, only that one line is shown.
 
-- The last `lineCount` lines. Each is a box with the translation and, optionally, the
-  original in a smaller font.
-- A draft box below them: translated drafts in the caption font at 60% opacity, source
-  drafts smaller and dimmer.
+- A finished line shows the translation and, optionally, the original in a smaller font.
+- Live words that are already translated use the caption font at 85% opacity, so they look
+  like the line they become; untranslated live words are smaller and dimmer.
 
 It positions everything at the top or bottom, at `offset × height` from the edge, at most
 `maxWidth × width` wide.
@@ -718,7 +726,7 @@ Notes:
 ## 15. Tests
 
 ```sh
-cd app && swift test                              # 62 tests, ~1–2 s
+cd app && swift test                              # 67 tests, ~1–2 s
 SUBTITLER_E2E=1 swift test --filter endToEnd      # real models, slow
 python3 -m unittest discover -s python/tests      # sidecar protocol
 ```

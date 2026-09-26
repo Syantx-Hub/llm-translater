@@ -17,6 +17,31 @@ struct SubtitleOverlayView: View {
     }
 }
 
+/// What one caption box shows.
+enum CaptionSlot: Equatable {
+    case line(SubtitleLine)
+    case live(DraftCaption)
+
+    /// The bottom slot keeps one identity whether it holds the words being spoken or the
+    /// line they became, so the text updates in place instead of a new box appearing.
+    static let currentID = "current"
+
+    /// The last `lineCount` boxes, counting the line being spoken: earlier finished lines,
+    /// then the live words (or, between sentences, the latest finished line).
+    static func slots(lines: [SubtitleLine], draft: DraftCaption?, lineCount: Int, showDrafts: Bool) -> [(id: String, slot: CaptionSlot)] {
+        let live = showDrafts ? draft.flatMap { $0.text.isEmpty ? nil : $0 } : nil
+        var finished = Array(lines.suffix(max(lineCount, 1)))
+        let current: CaptionSlot?
+        if let live {
+            current = .live(live)
+            finished = Array(finished.suffix(max(lineCount - 1, 0)))
+        } else {
+            current = finished.popLast().map(CaptionSlot.line)
+        }
+        return finished.map { ($0.id.uuidString, .line($0)) } + (current.map { [(currentID, $0)] } ?? [])
+    }
+}
+
 /// Lays captions out over an area the size of the screen (or a scaled-down preview of it).
 struct CaptionLayer: View {
     @ObservedObject var style: CaptionStyle
@@ -27,35 +52,12 @@ struct CaptionLayer: View {
     var scale: Double = 1
 
     var body: some View {
+        let slots = CaptionSlot.slots(lines: lines, draft: draft, lineCount: style.lineCount, showDrafts: style.showDrafts)
         GeometryReader { geometry in
             VStack(spacing: 8 * scale) {
-                ForEach(lines.suffix(style.lineCount)) { line in
-                    CaptionBox(style: style, scale: scale) {
-                        Text(line.translation)
-                            .font(style.captionFont(for: language, scale: scale))
-                            .foregroundStyle(style.textColor)
-                            .lineSpacing(style.fontSize * style.lineSpacing * scale)
-                        if style.showOriginal, line.original != line.translation {
-                            Text(line.original)
-                                .font(.system(size: style.fontSize * style.originalScale * scale))
-                                .foregroundStyle(style.textColor.opacity(0.7))
-                        }
-                    }
-                    .transition(.opacity)
-                }
-                if style.showDrafts, let draft, !draft.text.isEmpty {
-                    CaptionBox(style: style, scale: scale) {
-                        if draft.isTranslation {
-                            Text(draft.text)
-                                .font(style.captionFont(for: language, scale: scale))
-                                .foregroundStyle(style.textColor.opacity(0.6))
-                                .lineSpacing(style.fontSize * style.lineSpacing * scale)
-                        } else {
-                            Text(draft.text)
-                                .font(.system(size: style.fontSize * 0.55 * scale))
-                                .foregroundStyle(style.textColor.opacity(0.55))
-                        }
-                    }
+                ForEach(slots, id: \.id) { item in
+                    CaptionBox(style: style, scale: scale) { content(item.slot) }
+                        .transition(.opacity)
                 }
             }
             .multilineTextAlignment(.center)
@@ -63,7 +65,34 @@ struct CaptionLayer: View {
             .padding(style.position == .bottom ? .bottom : .top, geometry.size.height * style.offset)
             .frame(maxWidth: .infinity, maxHeight: .infinity,
                    alignment: style.position == .bottom ? .bottom : .top)
-            .animation(.easeOut(duration: 0.15), value: lines)
+            .animation(.easeOut(duration: 0.15), value: slots.map(\.id))
+        }
+    }
+
+    @ViewBuilder
+    private func content(_ slot: CaptionSlot) -> some View {
+        switch slot {
+        case .line(let line):
+            Text(line.translation)
+                .font(style.captionFont(for: language, scale: scale))
+                .foregroundStyle(style.textColor)
+                .lineSpacing(style.fontSize * style.lineSpacing * scale)
+            if style.showOriginal, line.original != line.translation {
+                Text(line.original)
+                    .font(.system(size: style.fontSize * style.originalScale * scale))
+                    .foregroundStyle(style.textColor.opacity(0.7))
+            }
+        case .live(let draft) where draft.isTranslation:
+            // Same font and place as the finished line it turns into; slightly dimmer
+            // while it may still change.
+            Text(draft.text)
+                .font(style.captionFont(for: language, scale: scale))
+                .foregroundStyle(style.textColor.opacity(0.85))
+                .lineSpacing(style.fontSize * style.lineSpacing * scale)
+        case .live(let draft):
+            Text(draft.text)
+                .font(.system(size: style.fontSize * 0.6 * scale))
+                .foregroundStyle(style.textColor.opacity(0.6))
         }
     }
 }

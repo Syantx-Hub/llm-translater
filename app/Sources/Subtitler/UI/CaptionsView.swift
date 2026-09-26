@@ -56,6 +56,7 @@ struct CaptionsView: View {
                     labeledSlider("Distance from edge", value: $style.offset, in: 0...0.4, format: "%.0f%%", scale: 100)
                     labeledSlider("Max width", value: $style.maxWidth, in: 0.4...1, format: "%.0f%%", scale: 100)
                     Stepper("Lines on screen: \(style.lineCount)", value: $style.lineCount, in: 1...3)
+                        .help("Counts the line being spoken. With 1, only the current line shows and updates in place.")
                     labeledSlider("Clear after", value: $style.hideAfter, in: 2...15, format: "%.0f s")
                 }
                 Section("Content") {
@@ -63,7 +64,8 @@ struct CaptionsView: View {
                     if style.showOriginal {
                         labeledSlider("Original size", value: $style.originalScale, in: 0.3...0.9, format: "%.0f%%", scale: 100)
                     }
-                    Toggle("Show text while someone is speaking", isOn: $style.showDrafts)
+                    Toggle("Show words while someone is speaking", isOn: $style.showDrafts)
+                        .help("Shows the current line as it's being spoken. Off: lines appear only once finished.")
                 }
             }
             .formStyle(.grouped)

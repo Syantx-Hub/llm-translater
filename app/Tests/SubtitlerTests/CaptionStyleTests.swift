@@ -67,3 +67,37 @@ import Testing
         #expect(lines.allSatisfy { $0.original == $0.translation })
     }
 }
+
+@Suite struct CaptionSlotTests {
+    private let one = SubtitleLine(original: "One.", translation: "တစ်။")
+    private let two = SubtitleLine(original: "Two.", translation: "နှစ်။")
+    private let live = DraftCaption(text: "သုံး", isTranslation: true)
+
+    @Test func withOneLineOnlyTheSpokenLineShows() {
+        let slots = CaptionSlot.slots(lines: [one, two], draft: live, lineCount: 1, showDrafts: true)
+        #expect(slots.map(\.slot) == [.live(live)])
+    }
+
+    @Test func theFinishedLineTakesTheSpokenLinesPlace() {
+        let speaking = CaptionSlot.slots(lines: [one], draft: live, lineCount: 1, showDrafts: true)
+        let finished = CaptionSlot.slots(lines: [one, two], draft: nil, lineCount: 1, showDrafts: true)
+        // Same identity, so the box updates in place instead of a new one appearing.
+        #expect(speaking.map(\.id) == [CaptionSlot.currentID])
+        #expect(finished.map(\.id) == [CaptionSlot.currentID])
+        #expect(finished.map(\.slot) == [.line(two)])
+    }
+
+    @Test func lineCountIncludesTheSpokenLine() {
+        let slots = CaptionSlot.slots(lines: [one, two], draft: live, lineCount: 2, showDrafts: true)
+        #expect(slots.map(\.slot) == [.line(two), .live(live)])
+    }
+
+    @Test func hidingDraftsShowsOnlyFinishedLines() {
+        let slots = CaptionSlot.slots(lines: [one, two], draft: live, lineCount: 1, showDrafts: false)
+        #expect(slots.map(\.slot) == [.line(two)])
+    }
+
+    @Test func nothingToShow() {
+        #expect(CaptionSlot.slots(lines: [], draft: nil, lineCount: 2, showDrafts: true).isEmpty)
+    }
+}

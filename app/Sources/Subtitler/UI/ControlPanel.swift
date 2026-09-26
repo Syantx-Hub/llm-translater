@@ -14,6 +14,10 @@ struct ControlPanel: View {
             } else {
                 settings
             }
+            if let notice = state.notice {
+                Label(notice, systemImage: "info.circle")
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(3)
+            }
             if let error = state.lastError {
                 Text(error).font(.caption).foregroundStyle(.orange).lineLimit(3)
             }
@@ -89,10 +93,18 @@ struct ControlPanel: View {
             .disabled(state.isRunning || state.isBusy)
 
             if models.speechModel?.isBuiltIn == true {
-                Text(state.sourceLanguage == Languages.auto
-                     ? "Apple Speech needs the spoken language. With Auto-detect, Whisper is used instead."
-                     : "Apple Speech shows words as they're spoken. Languages it can't hear use Whisper.")
-                    .font(.caption).foregroundStyle(.secondary)
+                if state.sourceLanguage == Languages.auto {
+                    Toggle("Detect the language, then switch to Apple Speech", isOn: $state.appleAutoHandover)
+                        .font(.caption)
+                        .disabled(state.isRunning || state.isBusy)
+                    Text(state.appleAutoHandover
+                         ? "The first line uses Whisper to find the language; after that captions are instant."
+                         : "Apple Speech needs the spoken language. With Auto-detect, Whisper is used instead.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Text("Apple Speech shows words as they're spoken. Languages it can't hear use Whisper.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             } else {
                 Text(state.responsiveness.detail)
                     .font(.caption).foregroundStyle(.secondary)

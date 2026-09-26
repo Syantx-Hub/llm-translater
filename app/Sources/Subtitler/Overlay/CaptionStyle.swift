@@ -65,7 +65,7 @@ final class CaptionStyle: ObservableObject {
     @Published var offset: Double { didSet { save(offset, "offset") } }
     /// Maximum caption width, as a fraction of the screen width.
     @Published var maxWidth: Double { didSet { save(maxWidth, "maxWidth") } }
-    /// How many recent lines stay on screen.
+    /// How many caption boxes are on screen, counting the line being spoken.
     @Published var lineCount: Int { didSet { save(lineCount, "lineCount") } }
     @Published var showOriginal: Bool { didSet { save(showOriginal, "showOriginal") } }
     @Published var originalScale: Double { didSet { save(originalScale, "originalScale") } }
@@ -93,7 +93,7 @@ final class CaptionStyle: ObservableObject {
         position = value("position").flatMap(Position.init) ?? .bottom
         offset = value("offset") ?? 0.06
         maxWidth = value("maxWidth") ?? 0.84
-        lineCount = value("lineCount") ?? 2
+        lineCount = value("lineCount") ?? 1
         showOriginal = value("showOriginal") ?? (d.object(forKey: "showOriginal") as? Bool) ?? false
         originalScale = value("originalScale") ?? 0.5
         showDrafts = value("showDrafts") ?? true
