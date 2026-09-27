@@ -74,6 +74,26 @@ cached **per sentence** (64 entries), so the final only translates what's new.
 
 In transcribe mode, live words are shown and replaced in place by the finished line.
 
+**A pause mid-sentence doesn't split the translation.** The segmenter ends an utterance
+after 480 ms of quiet, and film dialogue pauses longer than that inside sentences. Half
+a sentence translates badly and flashes by as its own line, so when translating, a line
+that doesn't end a sentence is **held** for its continuation and the two are translated
+as one (`commit` → `held`). It's released after 1.2 s without speech, or 3 s in any case.
+Whisper and Apple Speech both put a full stop on every piece, so in English a last word
+no sentence ends on ("that", "the", "and", "I"…) also marks a fragment, and the false
+stop is dropped when joining. Measured with a `say` clip ("Frank, I told you that
+[0.8 s] we are not doing this again."): one line with both recognizers, where it used to
+be two.
+
+**Context.** The last 6 lines go to the translator (MADLAD ignores them). An LLM gets
+the whole line in one request instead of sentence by sentence, and Gemma remembers what
+it translated, so the next line sees earlier translations too.
+
+**No blinking.** When words just spoken turn into a line, they stay on screen (up to
+2.5 s) until the line arrives, instead of dropping back to the previous line or to
+nothing. The *Clear after* timer restarts with every caption update, so a caption never
+clears while someone is still talking.
+
 ### Apple Speech specifics
 
 Apple sometimes keeps a paragraph in one phrase. When a volatile result has a punctuated

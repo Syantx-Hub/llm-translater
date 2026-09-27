@@ -102,7 +102,18 @@ actor SubtitlePipeline {
     private var decodingDraft: (isPause: Bool, task: Task<Transcript?, Never>)?
     private var draining = false
     private var context: [String] = []
+    /// Earlier lines given to the translator. LLMs use them for names, pronouns and tone.
+    static let contextLines = 6
     private var translationChain: Task<Void, Never>?
+    /// A line that stopped mid-sentence (the speaker paused), waiting briefly for the rest
+    /// so the sentence is translated whole. Translating only.
+    private var held: (text: String, endedAt: Date, spoken: SpokenSpan?, since: Date, timer: Task<Void, Never>)?
+    /// When speech was last heard (any segment, draft or streaming update).
+    private var lastActivity = Date.distantPast
+    /// A held fragment is released after this much quiet: nobody is finishing the sentence.
+    static let joinWindow: TimeInterval = 1.2
+    /// …and after this long in any case, so a caption is never far behind the speaker.
+    static let maxHold: TimeInterval = 3
 
     /// Bumped per final; draft results from an older utterance are dropped.
     private var utterance = 0
@@ -144,6 +155,8 @@ actor SubtitlePipeline {
     /// nothing more is emitted. Call when the session ends.
     func cancel() {
         cancelled = true
+        held?.timer.cancel()
+        held = nil
         finals.removeAll()
         latestDraft = nil
         decodingDraft?.task.cancel()
@@ -173,6 +186,7 @@ actor SubtitlePipeline {
 
     func submit(_ event: SpeechSegmenter.Event) {
         guard !cancelled else { return }
+        lastActivity = Date()
         guard whisperTranscribes else {
             checkLanguage(of: event)
             return
@@ -204,6 +218,7 @@ actor SubtitlePipeline {
         while draining || draftTranslation != nil {
             try? await Task.sleep(for: .milliseconds(20))
         }
+        releaseHeld()
         await translationChain?.value
     }
 
@@ -353,6 +368,7 @@ actor SubtitlePipeline {
     /// speech detection, so no segmenter or Whisper is involved.
     func submitVolatile(_ text: String) {
         guard !cancelled, !text.isEmpty else { return }
+        lastActivity = Date()
         var sentences = Self.sentences(in: uncommitted(text))
         // Apple Speech only finalizes a phrase after a stretch of silence, which a film's
         // background sound can delay by seconds, and it can keep a paragraph in one phrase.
@@ -514,14 +530,98 @@ actor SubtitlePipeline {
         commit(text, endedAt: final.endedAt, spoken: final.spoken, inFlight: inFlight, finished: finished)
     }
 
-    /// Emits a finished line, reusing the draft's translation when it matches.
+    /// Emits a finished line, reusing the draft's translation when it matches. When
+    /// translating, a line cut off mid-sentence by a pause first waits `joinWindow` for the
+    /// rest: half a sentence translates badly (Burmese puts the verb last, and the second
+    /// half loses its subject), and two lines flash by where one belongs.
     private func commit(_ text: String, endedAt: Date, spoken: SpokenSpan?,
                         inFlight: (text: String, task: Task<String?, Never>)?,
                         finished: (text: String, translation: String)?) {
+        var text = text, spoken = spoken, inFlight = inFlight, finished = finished
+        if let held {
+            held.timer.cancel()
+            self.held = nil
+            text = Self.join(Self.withoutFalseStop(held.text), text)
+            spoken = spoken.map { SpokenSpan(start: held.spoken?.start, end: $0.end, source: $0.source) }
+            // The draft translations covered only the second part.
+            if let inFlight, !text.hasPrefix(inFlight.text) { inFlight.task.cancel() }
+            inFlight = nil
+            finished = nil
+        }
+        if sourceNeedsTranslation, Self.isFragment(text, language: source) {
+            inFlight?.task.cancel()
+            held = (text, endedAt, spoken, Date(), Task { [weak self] in
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .milliseconds(200))
+                    guard let self, !Task.isCancelled else { return }
+                    if await self.heldIsDue() { await self.releaseHeld(); return }
+                }
+            })
+            Trace.log("holding a fragment for its continuation")
+            return
+        }
+        emitLine(text, endedAt: endedAt, spoken: spoken, inFlight: inFlight, finished: finished)
+    }
+
+    private func heldIsDue(now: Date = Date()) -> Bool {
+        guard let held else { return false }
+        return now.timeIntervalSince(held.since) >= Self.maxHold || now.timeIntervalSince(lastActivity) >= Self.joinWindow
+    }
+
+    /// Nothing followed the fragment in time: it's a line of its own.
+    private func releaseHeld() {
+        guard let held else { return }
+        self.held = nil
+        held.timer.cancel()
+        emitLine(held.text, endedAt: held.endedAt, spoken: held.spoken, inFlight: nil, finished: nil)
+    }
+
+    /// A line to hold for its continuation: it doesn't end a sentence, and isn't already
+    /// long. Whisper and Apple Speech both end every piece with a full stop, even "I told
+    /// you that." cut by a pause, so in English a last word no sentence ends on counts too.
+    static func isFragment(_ text: String, language: String? = nil) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        guard let last = trimmed.last, last != "…", !trimmed.hasSuffix("...") else { return false }
+        let words = trimmed.split(whereSeparator: \.isWhitespace)
+        guard words.count < 20, trimmed.count < 120 else { return false }
+        if !endsSentence(trimmed) { return true }
+        guard language == "en", last == ".", let word = words.last else { return false }
+        return danglingWords.contains(word.lowercased().trimmingCharacters(in: .punctuationCharacters))
+    }
+
+    /// English words a sentence doesn't end on. Not "you", "it", "so" or "do": "I love you.",
+    /// "I think so." and "Yes, I do." are whole sentences.
+    static let danglingWords: Set<String> = [
+        "a", "an", "the", "to", "of", "in", "on", "at", "with", "from", "by", "into",
+        "and", "but", "or", "nor", "because", "if", "when", "while", "that", "which", "whose", "than",
+        "my", "your", "his", "our", "their", "i", "we", "they", "he", "she",
+        "gonna", "wanna", "gotta", "just", "very", "really",
+    ]
+
+    /// "I told you that." → "I told you that": the recognizer's full stop on a cut-off piece.
+    static func withoutFalseStop(_ text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        guard trimmed.hasSuffix("."), !trimmed.hasSuffix(".."),
+              let word = trimmed.dropLast().split(whereSeparator: \.isWhitespace).last,
+              danglingWords.contains(word.lowercased()) else { return trimmed }
+        return String(trimmed.dropLast())
+    }
+
+    /// "I told him that" + "he was late." → "I told him that he was late." Capitals are
+    /// left alone: lowering "The" would also lower "Frank".
+    static func join(_ first: String, _ second: String) -> String {
+        let head = first.trimmingCharacters(in: .whitespaces)
+        let tail = second.trimmingCharacters(in: .whitespaces)
+        return head.isEmpty ? tail : tail.isEmpty ? head : head + " " + tail
+    }
+
+    private func emitLine(_ text: String, endedAt: Date, spoken: SpokenSpan?,
+                          inFlight: (text: String, task: Task<String?, Never>)?,
+                          finished: (text: String, translation: String)?) {
         let from = source ?? ""
         let lineContext = context
         context.append(text)
-        if context.count > 4 { context.removeFirst() }
+        if context.count > Self.contextLines { context.removeFirst() }
         let translate = sourceNeedsTranslation
         let draftTask = inFlight?.text == text ? inFlight?.task : nil
         let finishedTranslation = finished?.text == text ? finished?.translation : nil
@@ -561,10 +661,13 @@ actor SubtitlePipeline {
 
     // MARK: Translation
 
-    /// `translate(...)` with a per-sentence cache shared by drafts and finals.
+    /// `translate(...)` with a per-sentence cache shared by drafts and finals. An LLM gets
+    /// the whole line at once: it keeps sentences together better than MADLAD, and one
+    /// sentence often only makes sense with the one before it.
     private func translateCached(_ text: String, from source: String, to target: String, context: [String]) async throws -> String {
         var parts: [String] = []
-        for sentence in Self.sentences(in: text) {
+        let pieces = translator is BatchTranslating ? [text] : Self.sentences(in: text)
+        for sentence in pieces {
             let key = "\(source)>\(target)|\(sentence)"
             if let cached = sentenceCache[key] {
                 parts.append(cached)

@@ -22,8 +22,12 @@ actor FakeBatchTranslator: BatchTranslating {
         "[\(target)] \(text)"
     }
 
-    func castSheet(dialogue: [String], title: String?, from source: String, to target: String) async throws -> String {
+    private(set) var backgrounds: [String] = []
+
+    func castSheet(dialogue: [String], title: String?, background: String,
+                   from source: String, to target: String) async throws -> String {
         castRequests += 1
+        backgrounds.append(background)
         return "Line 1 and Line 2 are siblings: casual."
     }
 

@@ -59,6 +59,10 @@ flowchart LR
    as the clock moves (the lines at a new position first after a jump). If `Movie.my.srt`
    exists next to `Movie.en.srt` with the same cues, it's used and nothing is translated
    live. A line whose translation isn't ready isn't shown in the original language.
+   Between cues (`SubtitleSync.shownCues`), a gap of up to 2 s keeps the last line up until
+   the next starts, and after a longer gap it stays 1 s more: cues often end a beat before
+   the next begins, and showing only exact cue times made captions blink off and on at
+   every pause.
 9. **Whole sentences** (`SubtitleSentences`): files often split one sentence over cues
    ("I told you" / "not to go there."). Translated separately, each half becomes a
    sentence of its own, and in verb-final Burmese the halves can't be glued back. So

@@ -11,6 +11,7 @@ running models, and the headless tools used to measure everything in these docs.
 2. Assemble `Subtitler.app`: executable, `llama.framework` (thinned to arm64), SwiftPM
    resource bundles (the Silero model), icon, Info.plist.
 3. `--dev` adds `SubtitlerRepoRoot` to Info.plist (repo `.env`, Python sidecar).
+   No key or password from `.env` is ever copied into the app.
 4. Sign inside-out (framework, then app). Ad-hoc by default, or `SIGN_IDENTITY`. macOS ties
    permissions to the signature, so a stable identity keeps the audio permission.
 
@@ -23,7 +24,7 @@ Gotchas that cost time:
 ## Test
 
 ```sh
-cd app && swift test                              # 147 tests, a few seconds
+cd app && swift test                              # 186 tests, a few seconds
 SUBTITLER_E2E=1 swift test --filter endToEnd      # real models, slow
 python3 -m unittest discover -s python/tests      # sidecar protocol (6 tests)
 ```
@@ -40,7 +41,8 @@ python3 -m unittest discover -s python/tests      # sidecar protocol (6 tests)
 
 Suites: SpeechSegmenter, SubtitlePipeline, ModelFiles, CaptionStyle / SampleCaption /
 CaptionSlot, Integration, LlamaTranslator, SubtitleFile / SubtitleTranslator,
-SubtitleSync / SubtitleSources, SubtitleSentences, Cloud (adapters, HTTP safety, Keychain, prompts, estimate, resume).
+SubtitleSync / SubtitleSources, SubtitleSentences, Cloud (adapters, HTTP safety, Keychain, prompts, estimate, resume),
+LocalLLMPrompt (Gemma prompts, grammars, checks) / ModelFit, FilmBackground (canned Wikipedia and TMDB replies).
 
 ## Debug and measure
 

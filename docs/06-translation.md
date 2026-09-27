@@ -85,6 +85,85 @@ the finished sentence ([Live pipeline](05-live-pipeline-and-latency.md)).
 **Languages:** `Languages.swift` lists 45; codes are ISO 639-1, which both Whisper and
 MADLAD's `<2xx>` tags use.
 
+## On-device LLM translation (Gemma 4)
+
+MADLAD only takes the text. A chat LLM can also be told how subtitles should sound, which
+names to keep, and what came before, like the cloud LLMs ([Cloud translation](14-cloud-translation.md)).
+Models › On-device AI translation offers Google's Gemma 4 (Apache 2.0) as 4-bit GGUFs from
+`ggml-org`, run by the same llama.cpp: E2B (2.8 GB), E4B (4.6 GB), 12B (7.2 GB),
+26B-A4B MoE (14.6 GB) and 31B (18 GB). `LocalLLMTranslator` is a `BatchTranslating`
+engine, so Subtitle file mode and Save Translated Copy batch it with context exactly
+like a cloud engine.
+
+**Built for small models.** The larger Gemmas need more memory than most Macs have, so
+the engine is tuned for E2B on an 8 GB Mac. A 2B model follows short, concrete prompts
+and drifts on long ones; each rule below fixed something seen in testing:
+
+| Technique | Why |
+|---|---|
+| A GBNF **grammar** forces exactly one `N. …` line per input | Small models merge, split and skip lines. With the grammar a batch can't come back misnumbered. |
+| The grammar only allows the target's **script**, Latin and punctuation | E2B slipped Bengali letters into Burmese names ("ဒ্যামေ့ဂျ်"). Now it can't, and picks the nearest Burmese spelling instead. |
+| **8-line batches**, a four-rule system prompt, and a **worked example** in 14 languages (my, ko, ja, zh, th, vi, id, es, fr, de, pt, it, ru, hi) | The cloud prompt's 25 lines and eight rules are too much for a 2B model to track. The example shows the register a subtitle wants. |
+| **Names transliterated once** per film ("Frank → ဖရန့်", the grammar fixing each name) and given as a fixed list, filtered to the names each batch uses | Without it, each batch spelled a name its own way. |
+| Earlier lines come **with the translations already chosen** | Register and wording carry over between batches. |
+| Each line is **checked** (target script, not copied, no third script, not runaway) and a failing line is translated again on its own | A cheap second chance for the odd bad line. |
+| Greedy decoding that checks only the top token against the grammar, and the whole vocabulary only when that token is rejected | Filtering all 262k tokens at every step made a batch half again as slow. |
+| The prompt's fixed start stays in the **KV cache** (`swa_full`, longest common prefix) | The system prompt and example aren't decoded again for every batch. |
+
+Thinking is off (no `<|think|>` in the system turn); Gemma 4's turns are
+`<|turn>role\n…<turn|>`, written by `LocalLLMPrompt.gemma` because llama.cpp's built-in
+templates predate them.
+
+**Measured** on an M2 with 8 GB, 51 cues of *Spider-Man: Brand New Day*, English →
+Burmese, against a cloud LLM's translation as the reference:
+
+| Engine | Time | What stood out |
+|---|---|---|
+| MADLAD-400 3B Q4 | 28.5 s | Literary register (သည်, ၏), plural "ခင်ဗျားတို့" for one person, names left in English, "The hell, Frank?" → "ပြင်သစ်?" (France) |
+| Gemma 4 E2B Q4 | 34.6 s | Spoken register, names in Burmese and consistent, fewer made-up words. Still misreads some idioms ("you said it, not me" reversed), and uses ငါ/မင်း for everyone |
+| Gemma 4 E2B, Korean / French | 26 / 27 s | Natural 반말, and French ("Non, mec…") |
+
+**What it can't do yet: pronouns between characters.** Subtitle files don't say who is
+speaking, so a translator has to work out from the dialogue that Peter talks to Frank
+politely (ကျနော်/ခင်ဗျား) while Frank says ငါ/မင်း. The cloud LLMs do this in their cast
+sheet. E2B doesn't, even with the film's background. The viewer's character notes are
+the reliable fix for a small model; the larger Gemmas are the other.
+
+## Film background (optional)
+
+Who the characters are (a mother and her son, a boss and his staff) decides pronouns
+and politeness in many languages. With **"Look up the film's cast online"** turned on
+(off by default), `FilmBackgroundLookup` searches by the title and year from the file
+name (`FilmQuery`):
+
+- **Wikipedia** (no key): `Title (2019 film)`, `Title (film)`, `Title`, or for series
+  `Title (TV series)`, and failing those a search whose top hit has the same title apart
+  from punctuation (file names can't hold ":"). A disambiguation page, or a lead that
+  doesn't describe a film (or mention the year), means nothing is used. It reads the
+  lead's first two sentences and the **Cast** section only, one sentence per character:
+  the rest of an entry often runs into the story, and the Plot section is never
+  requested. For targets in their own script it also asks that language's Wikipedia
+  (langlinks) how it writes the names: `스파이더맨`, `퍼니셔`. Redirects are skipped, and
+  the title may be a translation rather than a sound-alike (Burmese Wikipedia calls
+  Spider-Man ပင့်ကူလူသား).
+- **TMDB** (only with the viewer's own key): search, then credits (movie, episode, or a
+  series' aggregate cast); used only when exactly one result matches the title (and
+  year). Adds characters Wikipedia didn't list.
+
+The result is cached per title and language, and shown as editable text next to the
+character notes ("Background from Wikipedia: …"). A lookup that fails or finds nothing
+never stops a translation: it goes ahead without it.
+
+How each engine uses it:
+- **Cloud LLM:** in the cast-sheet request, as trusted facts about who everyone is. The
+  model still decides from the dialogue how each pair talks, under the same spoiler-free
+  rules.
+- **Gemma:** not asked to reason about it. Character names the dialogue uses join the
+  names list, spelled as that language's Wikipedia writes them where it has them, and up
+  to ten `- Name: who they are` lines (the most mentioned characters) go in each batch
+  that mentions them, under "Who's who (pick pronouns and politeness to fit)".
+- **MADLAD** takes no context, and the lookup doesn't run for it.
+
 ## Try it
 
 ```sh
@@ -95,17 +174,32 @@ time $Subtitler --translate-subtitles /tmp/t.en.srt --target my && cat /tmp/t.my
 
 Try `--target ko`, `ja`, `zh`. For quality comparison with NLLB, see `python/eval.py`.
 
+With a Gemma model downloaded, the same file through the on-device LLM, looking up the
+film's cast (the flag does the lookup whatever the app's setting):
+
+```sh
+SUBTITLER_TRACE=1 $Subtitler --translate-subtitles "Movie (2019).en.srt" --target my \
+  --translator gemma-4-e2b-q4_0 --look-up-background
+```
+
+The trace prints the cast sheet (names and who's who) and each batch's time.
+
 ## Code map
 
-- `app/Sources/Subtitler/Translation/LlamaTranslator.swift`: llama.cpp loop
+- `app/Sources/Subtitler/Translation/LlamaTranslator.swift`: llama.cpp loop, shared `Llama` helpers
+- `app/Sources/Subtitler/Translation/LocalLLMTranslator.swift`: Gemma engine; `LocalLLMPrompt` (prompts, grammars, checks, examples)
+- `app/Sources/Subtitler/Subtitles/FilmBackground.swift`: film background lookup (Wikipedia, TMDB, cache)
+- `app/Sources/Subtitler/UI/FilmBackgroundViews.swift`: the Models section and the editable background
 - `app/Sources/Subtitler/Translation/Translator.swift`: protocol, factory, passthrough, sidecar engine enum
 - `app/Sources/Subtitler/Translation/SidecarTranslator.swift`, `python/translate_server.py`
 - `app/Sources/Subtitler/Translation/Languages.swift`
-- Tests: `LlamaTranslatorTests`, sentence splitting in `SubtitlePipelineTests`
+- Tests: `LlamaTranslatorTests`, `LocalLLMTranslatorTests`, `FilmBackgroundTests`, sentence splitting in `SubtitlePipelineTests`
 
 ## Further reading
 
 - MADLAD-400 paper: https://arxiv.org/abs/2309.04662
 - T5 paper: https://arxiv.org/abs/1910.10683
 - llama.cpp: https://github.com/ggml-org/llama.cpp
+- GBNF grammars: https://github.com/ggml-org/llama.cpp/blob/master/grammars/README.md
+- Gemma 4: https://huggingface.co/google/gemma-4-E2B-it
 - Quantization types explained: https://github.com/ggml-org/llama.cpp/blob/master/tools/quantize/README.md

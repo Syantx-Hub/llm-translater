@@ -36,10 +36,18 @@ For how it all works inside, and the AI concepts behind each part, see [docs/](d
   long a line may get. The main window shows the current lag while live.
 - **Guided** — a tour explains the three ways to use it; every setting says what it's
   for, and a live preview shows what each mode puts on screen.
+- **Two offline translators** — Gemma 4 (recommended for movies), a small AI model that
+  reads earlier lines, keeps names consistent and picks casual or polite speech; and
+  MADLAD-400 (recommended for live Translate), quicker but one sentence at a time with no
+  context. Each model card says how much memory it needs and whether this Mac has it. See
+  [docs/06-translation.md](docs/06-translation.md).
+- **Film background (optional, off by default)** — looks up the film's cast on Wikipedia
+  (and TMDB with your own key), sending only the title, so AI translators know who's who
+  and pick the right pronouns. Shown and editable before translating.
 - **Optional cloud translation** — OpenAI, Anthropic, Gemini, Mistral, DeepSeek, Groq,
   OpenRouter, or a local Ollama / LM Studio, with your own key (kept in the Keychain).
-  Best for subtitle files: translated in context, cached next to the file. Offline MADLAD
-  stays the default; nothing is sent unless you choose a cloud engine. See
+  Best for subtitle files: translated in context, cached next to the file. Offline stays
+  the default; nothing is sent unless you choose a cloud engine. See
   [docs/14-cloud-translation.md](docs/14-cloud-translation.md).
 - **Private** — audio never leaves the Mac and is never stored.
 
@@ -80,7 +88,7 @@ tccutil reset ScreenCapture com.syantxhub.subtitler    # Screen Recording (14.0�
 ## Pipeline
 
 Core Audio tap (16 kHz mono) → Silero VAD segmenter → Whisper (WhisperKit) or Apple Speech →
-MADLAD-400 via llama.cpp on the GPU (or an optional cloud LLM) → overlay.
+Gemma 4 or MADLAD-400 via llama.cpp on the GPU (or an optional cloud LLM) → overlay.
 
 The segmenter sends a draft whenever the speaker pauses and at regular intervals while
 they talk. Drafts are transcribed and translated immediately and shown in a lighter
@@ -92,7 +100,7 @@ speaker stops. Translation runs sentence by sentence with a repetition guard.
 |---|---|---|
 | Voice activity | Silero VAD (bundled) | MIT |
 | Speech | Apple Speech (built in, macOS 26), Whisper Large v3 Turbo, Turbo compact, Large v3, Small, Distil-Large v3 (English) | Apple / MIT |
-| Translation | MADLAD-400 3B Q4_K_M (default), Q8_0 | Apache 2.0 |
+| Translation | Gemma 4 E2B (default, recommended for movies), E4B, 12B, 26B-A4B, 31B; MADLAD-400 3B Q4_K_M (recommended for live Translate), Q8_0 | Apache 2.0 |
 
 Models live in `~/Library/Application Support/Subtitler/Models`. Downloads go to a
 staging folder and move into place only when complete; deleting a model removes its
@@ -101,15 +109,23 @@ files and caches. CoreML also keeps a compiled-model cache in
 
 ## OpenSubtitles API key
 
-Searching OpenSubtitles needs a free API key from
-https://www.opensubtitles.com/en/consumers. Put it in a `.env` file (see `.env.example`):
+Searching OpenSubtitles needs a free API key. The key is **never built into the app**:
+anything inside an app bundle can be read by whoever has a copy. Instead, the first time
+someone opens Find Subtitles, it walks them through getting their own (about two
+minutes): create a free account, add a "consumer" at
+https://www.opensubtitles.com/en/consumers, paste its API key. The app checks it once and
+keeps it in their Keychain. Signing in to OpenSubtitles is optional and raises the daily
+download limit. Without a key, a subtitle file they already have still works.
+
+For development you can use a `.env` file instead (see `.env.example`); a key saved in
+the app wins over it:
 
 - `~/Library/Application Support/Subtitler/.env` — works for every build, or
 - `.env` in the repo root — read by `scripts/build-app.sh --dev` builds.
 
 ```
 OPENSUBTITLES_API_KEY=your-key
-# optional, raises the daily download limit:
+# optional, raises the daily download limit (or sign in from Find Subtitles):
 OPENSUBTITLES_USERNAME=you
 OPENSUBTITLES_PASSWORD=secret
 ```

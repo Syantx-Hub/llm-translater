@@ -16,6 +16,7 @@ struct ControlPanel: View {
     /// The scrolling middle's natural height, measured, so the panel is only as tall as
     /// its content until that no longer fits on screen.
     @StateObject private var contentHeight = Measured()
+    @StateObject private var panelHeight = Measured()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -38,6 +39,11 @@ struct ControlPanel: View {
             .padding([.horizontal, .bottom], 14)
         }
         .frame(width: 360)
+        .background(GeometryReader { geometry in
+            Color.clear.preference(key: PanelHeightKey.self, value: geometry.size.height)
+        })
+        .onPreferenceChange(PanelHeightKey.self) { panelHeight.value = $0 }
+        .background(FitWindowHeight(height: panelHeight.value))
         .onAppear { models.refreshCloud() }
     }
 
@@ -147,7 +153,7 @@ struct ControlPanel: View {
             case .translate:
                 spokenLanguage
                 subtitleLanguage(label: "Subtitles in")
-                TranslationEnginePicker(models: models, mode: .translate, compact: true) { show("models") }
+                TranslationEnginePicker(models: models, mode: .translate, compact: true) { ModelsView.request(.translation); show("models") }
                 options
             case .transcribe:
                 spokenLanguage
@@ -229,7 +235,7 @@ struct ControlPanel: View {
                         }
                     }
                     subtitleLanguage(label: "Translate to")
-                    TranslationEnginePicker(models: models, mode: .synced, compact: true) { show("models") }
+                    TranslationEnginePicker(models: models, mode: .synced, compact: true) { ModelsView.request(.translation); show("models") }
                     if let provider = models.cloudProvider, let estimate = state.syncEstimate(models: models) {
                         CloudEstimateView(estimate: estimate, provider: provider,
                                           freeTier: models.cloudConfig.usesFreeTier(provider),
@@ -388,6 +394,32 @@ struct ControlPanel: View {
         case .failed: .red
         case .running: .green
         default: .secondary
+        }
+    }
+}
+
+private struct PanelHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
+/// Keeps the window exactly as tall as the panel. The menu bar's window takes the panel's
+/// size when it opens but never shrinks after, so switching to a mode with less to show left
+/// an empty, see-through strip below it. The top edge stays put, under the menu bar.
+private struct FitWindowHeight: NSViewRepresentable {
+    let height: CGFloat
+
+    func makeNSView(context: Context) -> NSView { NSView() }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        let height = height
+        DispatchQueue.main.async {
+            guard height > 0, let window = view.window else { return }
+            let current = window.contentRect(forFrameRect: window.frame)
+            guard abs(current.height - height) > 1 else { return }
+            let target = window.frameRect(forContentRect: NSRect(x: current.minX, y: current.maxY - height,
+                                                                width: current.width, height: height))
+            window.setFrame(target, display: true)
         }
     }
 }

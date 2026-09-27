@@ -1,6 +1,6 @@
 import Foundation
 
-/// A translation engine: a native model (MADLAD), a cloud or local LLM, or a developer
+/// A translation engine: a native model (MADLAD), a cloud or on-device LLM, or a developer
 /// sidecar. The pipeline only sees this protocol.
 protocol Translator: Sendable {
     func start() async throws
@@ -70,6 +70,7 @@ enum TranslatorFactory {
             throw TranslatorSelectionError.notInstalled(selection)
         }
         guard ModelFiles.isInstalled(model) else { throw TranslatorSelectionError.notInstalled(model.name) }
-        return LlamaTranslator(modelPath: ModelFiles.localURL(for: model).path)
+        let path = ModelFiles.localURL(for: model).path
+        return model.isLLM ? LocalLLMTranslator(modelPath: path) : LlamaTranslator(modelPath: path)
     }
 }

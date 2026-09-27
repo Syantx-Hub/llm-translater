@@ -81,6 +81,19 @@ final class SubtitleSync {
         return cues.indices.filter { cues[$0].start <= time && time < cues[$0].end }
     }
 
+    /// The lines to keep on screen now: the active ones, or in a gap, the last one. A gap
+    /// of up to `bridge` seconds before the next line (a speaker's pause, a cue split
+    /// mid-sentence) keeps it until the next starts, so captions don't blink off and on;
+    /// after a longer gap it stays `linger` seconds, then clears.
+    func shownCues(at now: Date, bridge: TimeInterval = 2, linger: TimeInterval = 1) -> [Int] {
+        let active = activeCues(at: now)
+        guard active.isEmpty, let time = videoTime(at: now),
+              let last = cues.lastIndex(where: { $0.end <= time && $0.start <= time }) else { return active }
+        let next = cues[(last + 1)...].first { $0.start > cues[last].start }
+        if let next, next.start - cues[last].end <= bridge, time < next.start { return [last] }
+        return time - cues[last].end < linger ? [last] : []
+    }
+
     /// The next few lines from now, to translate before they're due.
     func upcomingCues(at now: Date, count: Int) -> [Int] {
         guard let time = videoTime(at: now) else { return [] }

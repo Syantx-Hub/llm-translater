@@ -67,6 +67,11 @@ final class ModelStore: ObservableObject {
         return translationModel != nil || selectedTranslation.hasPrefix(Self.sidecarPrefix)
     }
 
+    /// Translating with an LLM (cloud or Gemma), which reads the viewer's character notes.
+    var translatesWithLLM: Bool {
+        cloudProvider != nil || translationModel?.isLLM == true
+    }
+
     var translationName: String {
         if let cloudProvider {
             let model = cloudConfig.model(for: cloudProvider)

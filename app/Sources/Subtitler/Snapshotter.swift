@@ -23,12 +23,15 @@ enum Snapshotter {
         try? FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
 
         var views: [(String, AnyView, NSSize)] = [
-            ("models", AnyView(ModelsView(store: models)), NSSize(width: 700, height: 2900)),
+            ("models-speech", AnyView(ModelsView(store: models, initialTab: .speech)), NSSize(width: 700, height: 1500)),
+            ("models-translation", AnyView(ModelsView(store: models, initialTab: .translation)), NSSize(width: 700, height: 2400)),
+            ("models-online", AnyView(ModelsView(store: models, initialTab: .online)), NSSize(width: 700, height: 1300)),
             ("panel", AnyView(ControlPanel(state: state, models: models, subtitleJob: SubtitleJob(), style: style)),
              NSSize(width: 360, height: 820)),
             ("captions", AnyView(CaptionsView(state: state, style: style)), NSSize(width: 900, height: 700)),
             ("subtitles", AnyView(SubtitleFileView(job: SubtitleJob(), state: state, models: models)), NSSize(width: 520, height: 560)),
             ("overlay", AnyView(SubtitleOverlayView(state: state, style: style).background(Color.gray)), NSSize(width: 1000, height: 320)),
+            ("opensubtitles-key", AnyView(OpenSubtitlesKeySetup {}.padding(20)), NSSize(width: 560, height: 330)),
         ]
         for step in WelcomeView.Step.allCases {
             views.append(("welcome-\(step.rawValue)",

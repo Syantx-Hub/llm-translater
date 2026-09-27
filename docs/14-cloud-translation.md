@@ -91,7 +91,7 @@ exactly what would be sent. Provider quirks (checked against each provider's doc
 |---|---|
 | Keys only in the Keychain: generic password, `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`, not synchronizable | Encrypted at rest, unreadable while the Mac is locked, never copied to iCloud or other devices. UserDefaults, `.env` and plist files are plain text anyone (or any backup) can read. |
 | Whether a key is saved, and its `••••1234` ending, come from the Keychain item's attributes; the key's data is read only when sending a request | Reading a login-keychain item's data can ask the user's permission; attributes never do. |
-| Read the key per request, never kept in `@Published` or long-lived properties | Less time in memory, and nothing SwiftUI might snapshot, persist or show. The typed key lives in a non-published draft that's cleared on save or when the window closes. |
+| Read the key per request, never kept in `@Published` or long-lived properties; `KeychainStore` caches it privately after the first read | Nothing SwiftUI might snapshot, persist or show. The cache exists because a build without a team ID makes macOS ask on every Keychain read until "Always Allow", and a film is hundreds of requests. The typed key lives in a non-published draft that's cleared on save or when the window closes. |
 | Show only `••••1234`, with Replace and Remove | Shoulder-surfing and screenshots. The last four characters are enough to tell keys apart. Remove deletes the Keychain item. |
 | Key in the auth header, never the URL (Gemini too: `x-goog-api-key`) | URLs end up in logs, proxies, crash reports and error messages. |
 | HTTPS to the official host; custom endpoints need https, except `http://localhost` / `127.0.0.1` | Plain http sends the key readable on the network. Local servers never leave the Mac. |
@@ -100,6 +100,22 @@ exactly what would be sent. Provider quirks (checked against each provider's doc
 | Redact key-shaped strings from provider errors (`sk-…`, `AIza…`, `gsk_…`, `Bearer …`, long tokens) | Providers echo parts of rejected keys ("Incorrect API key provided: sk-…"). |
 | Never logged: `SUBTITLER_TRACE` prints timings only; snapshots use an in-memory store | Logs and screenshots get shared. |
 | Timeouts; backoff on 429 using `retry-after`; stop on a used-up quota | Don't hang, and don't hammer a provider (or burn money) retrying something that won't succeed today. |
+
+### Film background lookup
+
+Looking up a film's cast ([Translation › Film background](06-translation.md#film-background-optional))
+is a separate opt-in with its own rules:
+
+| Rule | Why |
+|---|---|
+| Off by default; the toggle (Models, and the tour) says what is sent: "sends only the film's title to Wikipedia/TMDB" | Sending anything should be the viewer's choice, made knowing what goes out. |
+| Only the title and year (or season and episode) from the file name, and for spellings the character names Wikipedia itself returned; never subtitle text, audio or file paths | The title is all a lookup needs. Dialogue and paths can say far more about the viewer. |
+| Runs only when an LLM engine translates, never for MADLAD | Nothing is sent when nothing would use it. |
+| HTTPS only; an ephemeral session with no cookies or cache and a plain `User-Agent: Subtitler/1.0` | No tracking state, nothing identifying beyond the app's name. |
+| TMDB only with the viewer's own key (the "API Read Access Token"), kept in the Keychain like cloud keys and sent as a `Bearer` header, never in the URL; no key, no TMDB request and no error | TMDB is optional; Wikipedia needs no key. |
+| Each result, including "nothing found", is cached per title and language under Application Support; Models › Clear saved backgrounds deletes the cache and every file's copy | Watching again sends nothing, and the viewer can wipe it. |
+| Never the Plot or Synopsis section; one sentence per cast entry | Spoilers. |
+| Shown as editable text with its source before translating | The viewer can check it, fix it or delete lines. |
 
 ### Why macOS asks twice after a rebuild
 
@@ -159,7 +175,8 @@ because requests go one after another and each batch reply takes a few seconds.
 - `Translation/Cloud/LLMPrompt.swift`: system prompt, batch prompt, numbered parsing, names glossary
 - `Subtitles/SentenceTranslation.swift`: resumable batch runs, `CloudEstimate`
 - `UI/CloudSection.swift`, `UI/TranslationEngineViews.swift`: the UI
-- Tests: `CloudTests.swift` (adapters, key only in headers, redirects, http rules, redaction, Keychain, parsing, estimate, 429 countdown, quota partial save and resume, factory)
+- `Subtitles/FilmBackground.swift`, `UI/FilmBackgroundViews.swift`: the opt-in film background lookup
+- Tests: `FilmBackgroundTests.swift` (query building, cast section only, cache, toggle off, TMDB key), `CloudTests.swift` (adapters, key only in headers, redirects, http rules, redaction, Keychain, parsing, estimate, 429 countdown, quota partial save and resume, factory)
 
 ## Further reading
 

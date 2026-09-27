@@ -27,6 +27,7 @@ enum SubtitleTranslator {
     /// group, from an earlier partial run) are kept, so only the rest is translated.
     static func translate(_ cues: [SubtitleCue], from source: String, to target: String, with translator: Translator,
                           existing: [Int: String] = [:], title: String? = nil, notes: String = "",
+                          background: BackgroundSource = { "" },
                           progress: @escaping @Sendable (Progress) -> Void) async throws -> [SubtitleCue] {
         let sentences = SubtitleSentences(cues: cues)
         let total = sentences.groups.count
@@ -35,7 +36,8 @@ enum SubtitleTranslator {
         do {
             let done = try await SentenceTranslation.run(
                 order: Array(sentences.groups.indices), cues: cues, sentences: sentences,
-                from: source, to: target, with: translator, done: existing, title: title, notes: notes
+                from: source, to: target, with: translator, done: existing, title: title, notes: notes,
+                background: background
             ) { step in
                 let newlyDone = step.done.count - existing.count
                 let elapsed = Date().timeIntervalSince(started)
@@ -122,7 +124,8 @@ final class SubtitleJob: ObservableObject {
                 defer { Task { await translator.stop() } }
                 let result = try await SubtitleTranslator.translate(
                     cues, from: source == Languages.auto ? "en" : source, to: target, with: translator, existing: existing,
-                    title: FilmTitle.from(input), notes: CharacterNotes.get(for: input)
+                    title: FilmTitle.from(input), notes: CharacterNotes.get(for: input),
+                    background: { await FilmBackgroundNotes.resolve(for: input, target: target) }
                 ) { progress in
                     Task { @MainActor in
                         guard let self, self.isWorking else { return }
@@ -169,7 +172,8 @@ final class SubtitleJob: ObservableObject {
     }
 }
 
-/// Headless: `Subtitler --translate-subtitles Movie.en.srt [--target my] [--source en] [--translator ID]`
+/// Headless: `Subtitler --translate-subtitles Movie.en.srt [--target my] [--source en] [--translator ID]
+/// [--look-up-background]` (the flag looks up the film's cast whatever the app's setting).
 enum SubtitleRunner {
     static func run(arguments: [String]) async -> Int32 {
         func option(_ name: String) -> String? {
@@ -186,7 +190,15 @@ enum SubtitleRunner {
             let translator = try TranslatorFactory.make(selection: selection)
             try await translator.start()
             let started = Date()
-            let result = try await SubtitleTranslator.translate(cues, from: source, to: target, with: translator) { progress in
+            let lookup = FilmBackgroundLookup(settings: { arguments.contains("--look-up-background") })
+            let result = try await SubtitleTranslator.translate(
+                cues, from: source, to: target, with: translator, title: FilmTitle.from(input),
+                background: {
+                    let background = await lookup.lookup(FilmQuery(FilmTitle.from(input)), target: target)
+                    print("[subtitles] background: \(background.map { "\($0.source), \($0.characters.count) characters" } ?? "none")")
+                    return background?.text(target: target) ?? ""
+                }
+            ) { progress in
                 if progress.done % 10 == 0 || progress.done == progress.total {
                     print("[subtitles] \(progress.done)/\(progress.total) (\(progress.requests) requests)")
                 }

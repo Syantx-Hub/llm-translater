@@ -220,6 +220,67 @@ import Testing
         #expect(lines(updates).map(\.original) == ["Mumbled wrods."])
     }
 
+    @Test func aSentenceCutByAPauseIsTranslatedWhole() async {
+        let translator = FakeTranslator()
+        let (pipeline, updates) = pipeline(transcriber: FakeTranscriber(script: [:]), translator: translator,
+                                           translateDrafts: false)
+
+        await pipeline.submitFinal("I told him that", speechEndedAt: Date())
+        await pipeline.submitFinal("he was late.", speechEndedAt: Date())
+        await pipeline.flush()
+
+        #expect(lines(updates).map(\.original) == ["I told him that he was late."])
+        #expect(await translator.calls == ["I told him that he was late."])
+    }
+
+    @Test func aFragmentNobodyFinishesShowsAfterAQuietMoment() async throws {
+        let (pipeline, updates) = pipeline(transcriber: FakeTranscriber(script: [:]), translateDrafts: false)
+
+        await pipeline.submitFinal("Wait for me", speechEndedAt: Date())
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(lines(updates).isEmpty)
+        try await Task.sleep(for: .seconds(SubtitlePipeline.joinWindow + 0.5))
+        #expect(lines(updates).map(\.original) == ["Wait for me"])
+    }
+
+    @Test func transcribingNeverHoldsLines() async throws {
+        let (pipeline, updates) = pipeline(transcriber: FakeTranscriber(script: [:]), target: nil)
+        await pipeline.submitFinal("Wait for me", speechEndedAt: Date())
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(lines(updates).map(\.original) == ["Wait for me"])
+    }
+
+    @Test func fragmentsAndJoins() {
+        #expect(SubtitlePipeline.isFragment("I told him that"))
+        #expect(SubtitlePipeline.isFragment("If you go,"))
+        #expect(!SubtitlePipeline.isFragment("He was late."))
+        #expect(!SubtitlePipeline.isFragment("Where were you?"))
+        #expect(!SubtitlePipeline.isFragment("So…"))
+        #expect(!SubtitlePipeline.isFragment(String(repeating: "word ", count: 25)))
+        // Recognizers put a full stop on every piece; a dangling last word gives it away.
+        #expect(SubtitlePipeline.isFragment("Frank, I told you that.", language: "en"))
+        #expect(!SubtitlePipeline.isFragment("Frank, I told you that.", language: "ko"))
+        #expect(!SubtitlePipeline.isFragment("I love you.", language: "en"))
+        #expect(!SubtitlePipeline.isFragment("Wait...", language: "en"))
+        #expect(SubtitlePipeline.join("I told Frank,", "Frank was late.") == "I told Frank, Frank was late.")
+        #expect(SubtitlePipeline.join(" ", "Hi.") == "Hi.")
+        #expect(SubtitlePipeline.withoutFalseStop("I told you that.") == "I told you that")
+        #expect(SubtitlePipeline.withoutFalseStop("I love you.") == "I love you.")
+    }
+
+    @Test func anLLMGetsTheWholeLineAtOnce() async {
+        let (llm, llmUpdates) = pipeline(transcriber: FakeTranscriber(script: [:]), translator: FakeBatchTranslator(),
+                                         translateDrafts: false)
+        await llm.submitFinal("I know. Go home.", speechEndedAt: Date())
+        await llm.flush()
+        #expect(lines(llmUpdates).map(\.translation) == ["[my] I know. Go home."])
+
+        let (mt, mtUpdates) = pipeline(transcriber: FakeTranscriber(script: [:]), translateDrafts: false)
+        await mt.submitFinal("I know. Go home.", speechEndedAt: Date())
+        await mt.flush()
+        #expect(lines(mtUpdates).map(\.translation) == ["[my] I know. [my] Go home."])
+    }
+
     @Test func unclearStreamingPhrasesAreHidden() async {
         let (pipeline, updates) = pipeline(transcriber: FakeTranscriber(script: [:]), translateDrafts: false)
 

@@ -178,6 +178,7 @@ final class AppState: ObservableObject {
     /// The caption language the running session was started with.
     private var sessionCaptionLanguage: String?
     private var hideTask: Task<Void, Never>?
+    private var draftHoldTask: Task<Void, Never>?
     private lazy var overlay = OverlayController(state: self, style: style)
 
     init(models: ModelStore, style: CaptionStyle, defaults: UserDefaults = .standard) {
@@ -500,6 +501,7 @@ final class AppState: ObservableObject {
         sessionCaptionLanguage = nil
         models.inUse = []
         hideTask?.cancel()
+        draftHoldTask?.cancel()
         lines = []
         draft = nil
         if !previewOnScreen { overlay.hide() }
@@ -529,8 +531,15 @@ final class AppState: ObservableObject {
         switch update {
         case .draft where sync != nil:
             break // sync mode shows the file's lines, never live words
-        case .draft(let caption):
+        case .draft(let caption?):
+            draftHoldTask?.cancel()
             draft = caption
+            scheduleHide()
+        case .draft(nil):
+            // The words just spoken are becoming a line (translated, or joined with the rest of
+            // the sentence). Keep them up until it arrives instead of blinking to the previous
+            // line or to nothing.
+            holdDraft()
         case .line(let original, _, _, let spoken) where sync != nil:
             // Sync mode: what was heard only positions the file; its own lines are shown.
             // A line with no timing of its own (a sentence cut from a longer phrase) can't
@@ -538,6 +547,7 @@ final class AppState: ObservableObject {
             if let spoken { sync?.observe(original, spoken: spoken) }
             updateSyncedCaptions()
         case .line(let original, let translation, let seconds, _):
+            draftHoldTask?.cancel()
             draft = nil
             lines.append(SubtitleLine(original: original, translation: translation))
             if lines.count > 3 { lines.removeFirst(lines.count - 3) }
@@ -554,13 +564,29 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// Clear subtitles after a quiet spell so stale lines don't sit on screen.
+    /// Clear subtitles after a quiet spell so stale lines don't sit on screen. Any caption
+    /// activity (a line, or words being spoken) starts the wait again, so a caption never
+    /// clears while someone is still talking.
     private func scheduleHide() {
         hideTask?.cancel()
         hideTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(self?.style.hideAfter ?? 6))
             guard !Task.isCancelled else { return }
             self?.lines = []
+            self?.draft = nil
+        }
+    }
+
+    /// How long finished words stay up while their line is on its way.
+    static let draftHold: TimeInterval = 2.5
+
+    private func holdDraft() {
+        guard draft != nil else { return }
+        draftHoldTask?.cancel()
+        draftHoldTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(Self.draftHold))
+            guard !Task.isCancelled else { return }
+            self?.draft = nil
         }
     }
 
@@ -627,7 +653,8 @@ extension AppState {
             ? nil
             : SyncTranslations(cues: syncCues, sentences: sentences, translator: translator,
                                source: syncLanguage, target: target, existing: existing, cacheURL: cacheURL,
-                               title: FilmTitle.from(syncFile), notes: CharacterNotes.get(for: syncFile)) { status in
+                               title: FilmTitle.from(syncFile), notes: CharacterNotes.get(for: syncFile),
+                               background: { [syncFile] in await FilmBackgroundNotes.resolve(for: syncFile, target: target) }) { status in
                 Task { @MainActor [weak self] in
                     guard let self, self.session == id else { return }
                     self.syncCloudStatus = status
@@ -658,7 +685,7 @@ extension AppState {
         // The offset moves the file's clock: positive shows subtitles earlier.
         let now = Date().addingTimeInterval(syncOffset)
         syncStatus = sync.status(at: now)
-        let groups = sentences.groups(of: sync.activeCues(at: now))
+        let groups = sentences.groups(of: sync.shownCues(at: now))
         Task { [syncTranslations, syncCues] in
             await syncTranslations?.prefetch(cues: sync.upcomingCues(at: now, count: 12))
             var shown: [SubtitleLine] = []

@@ -21,7 +21,7 @@ enum LLMPrompt {
     }
 
     /// Where the default register of a language's machine translation goes wrong.
-    private static let registerNote: [String: String] = [
+    static let registerNote: [String: String] = [
         "my": "Use colloquial spoken Burmese (endings like တယ်, ဘူး, မလား), not literary Burmese (သည်, ၏, ၍), unless the speaker is giving a formal speech.",
         "ko": "Use 반말 between close friends and family, and 존댓말 to strangers and superiors, as the context shows.",
         "ja": "Match casual speech (タメ口) or polite speech (です/ます) to the relationship shown in context.",
@@ -75,7 +75,10 @@ enum LLMPrompt {
 
     /// Dialogue capped to fit one request: a long film is sampled evenly, so every part of
     /// the story is represented.
-    static func castRequest(_ dialogue: [String], title: String? = nil, maxCharacters: Int = 24_000) -> String {
+    /// - Parameter background: who the characters are, looked up online: trusted facts, but
+    ///   how each pair talks still comes from the dialogue.
+    static func castRequest(_ dialogue: [String], title: String? = nil, background: String = "",
+                            maxCharacters: Int = 24_000) -> String {
         let lines = dialogue.filter { !$0.isEmpty }
         var chosen = lines
         let total = lines.reduce(0) { $0 + $1.count + 1 }
@@ -87,6 +90,10 @@ enum LLMPrompt {
         var message = ""
         if let title {
             message += "These subtitles are from: \(title) (from the file name). If you know this film or series, use what you know about its characters and how they relate, and the names its audience in the target language knows them by; check it against the dialogue. If you don't know it, work from the dialogue alone.\n\n"
+        }
+        let facts = background.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !facts.isEmpty {
+            message += "Background on this film, looked up online. Trust it for who each character is (names, roles, family and work relationships), and use it to choose the pronouns and politeness each pair uses. Still work out from the dialogue how they actually talk to each other, and keep the spoiler-free rules: use nothing from it that the story hasn't shown yet.\n\(facts)\n\n"
         }
         return message + "The dialogue\(chosen.count < lines.count ? " (a sample)" : ""), in order:\n" + chosen.joined(separator: "\n")
     }

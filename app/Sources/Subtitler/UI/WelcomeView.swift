@@ -12,6 +12,7 @@ struct WelcomeView: View {
     // @StateObject rather than @State: the SwiftUI macro plugin behind @State ships only
     // with Xcode, and this app builds with the Command Line Tools.
     @StateObject private var flow: Flow
+    @StateObject private var lookUpCast = Flag()
 
     private var step: Step { flow.step }
     private var hasPermission: Bool { flow.permission == .granted }
@@ -174,7 +175,7 @@ struct WelcomeView: View {
     private var translation: some View {
         stepLayout(
             title: "Choose your language and a translator",
-            subtitle: "The translator turns the words into your subtitle language. Download an offline model (runs on this Mac), or use a cloud AI with your own key, or both."
+            subtitle: "The translator turns the words into your subtitle language, on this Mac. Gemma is recommended for movies: it reads the scene for natural dialogue. MADLAD is recommended for live Translate: it's quickest, but translates each sentence on its own. Or use a cloud AI with your own key."
         ) {
             Picker("Subtitles in", selection: $state.targetLanguage) {
                 ForEach(Languages.all) { Text($0.name).tag($0.code) }
@@ -182,10 +183,19 @@ struct WelcomeView: View {
             .frame(maxWidth: 280, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.bottom, 4)
-            ForEach(ModelCatalog.translation) { ModelCard(model: $0, store: store, compact: true) }
+            ForEach([ModelCatalog.gemma[0], ModelCatalog.madlad[0]]) { ModelCard(model: $0, store: store, compact: true) }
             cloudChoice
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.top, 6)
+            VStack(alignment: .leading, spacing: 2) {
+                Toggle(FilmBackgroundSettings.toggleLabel, isOn: Binding(
+                    get: { lookUpCast.value },
+                    set: { lookUpCast.value = $0; FilmBackgroundSettings().lookupEnabled = $0 }))
+                HelpNote("Helps AI translators get pronouns and politeness right between characters. Off unless you turn it on.")
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 6)
+            .onAppear { lookUpCast.value = FilmBackgroundSettings().lookupEnabled }
         }
     }
 

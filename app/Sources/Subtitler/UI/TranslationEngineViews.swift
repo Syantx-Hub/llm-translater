@@ -207,6 +207,7 @@ struct RateLimitCountdown: View {
 /// "Notes about the characters": helps a cloud translator choose casual or polite speech.
 struct CharacterNotesField: View {
     let file: URL?
+    var target = UserDefaults.standard.string(forKey: "targetLanguage") ?? "my"
     @StateObject private var text = Draft()
 
     final class Draft: ObservableObject { @Published var value = "" }
@@ -216,6 +217,7 @@ struct CharacterNotesField: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             NoticeRow(symbol: "person.2", text: "Who's who is worked out for you: the AI reads the whole script and uses what it knows about \(FilmTitle.from(file).map { "“\($0)”" } ?? "the film").")
+            FilmBackgroundField(file: file, target: target)
             if open.value || !text.value.isEmpty { editor } else {
                 Button("Add notes (optional)…") { open.value = true }
                     .buttonStyle(.link).font(.caption)

@@ -27,10 +27,18 @@ protocol BatchTranslating: Translator {
                         context: [String], film: FilmContext) async throws -> [String]
     /// Reads the whole script once and describes the characters and their relationships,
     /// so every batch uses the right register between each pair.
-    /// - Parameter title: the film or episode, from the file name, so the model can use
-    ///   what it knows about it.
-    func castSheet(dialogue: [String], title: String?, from source: String, to target: String) async throws -> String
+    /// - Parameters:
+    ///   - title: the film or episode, from the file name, so the model can use what it
+    ///     knows about it.
+    ///   - background: who the characters are, looked up online (`FilmBackground` text);
+    ///     empty when the lookup is off or found nothing.
+    func castSheet(dialogue: [String], title: String?, background: String,
+                   from source: String, to target: String) async throws -> String
 }
+
+/// The film's background text, fetched only when a batch engine needs it (so MADLAD
+/// never triggers a lookup).
+typealias BackgroundSource = @Sendable () async -> String
 
 /// "Parasite (2019)" or "Breaking Bad S01E01", from a subtitle file's name: release tags,
 /// the language code and dots are dropped.
@@ -57,11 +65,15 @@ enum FilmTitle {
 
 extension FilmContext {
     /// Everything known about the film before translating: names found on device, the
-    /// model's cast sheet (one request; skipped if it fails), and the viewer's notes.
+    /// film's background (looked up online, if turned on), the model's cast sheet (one
+    /// request; skipped if it fails), and the viewer's notes.
     static func prepare(cues: [SubtitleCue], title: String?, from source: String, to target: String,
-                        with batcher: BatchTranslating, notes: String) async -> FilmContext {
+                        with batcher: BatchTranslating, notes: String,
+                        background: BackgroundSource = { "" }) async -> FilmContext {
         let dialogue = cues.map { SubtitleFile.plainText($0.text) }
-        let sheet = (try? await batcher.castSheet(dialogue: dialogue, title: title, from: source, to: target)) ?? ""
+        let facts = await background()
+        let sheet = (try? await batcher.castSheet(dialogue: dialogue, title: title, background: facts,
+                                                  from: source, to: target)) ?? ""
         let viewer = notes.trimmingCharacters(in: .whitespacesAndNewlines)
         let cast = [sheet, viewer.isEmpty ? "" : "From the viewer (trust this over the above):\n" + viewer]
             .filter { !$0.isEmpty }.joined(separator: "\n")
@@ -93,6 +105,7 @@ enum SentenceTranslation {
     static func run(order: [Int], cues: [SubtitleCue], sentences: SubtitleSentences,
                     from source: String, to target: String, with translator: Translator,
                     done initial: [Int: String] = [:], title: String? = nil, notes: String = "",
+                    background: BackgroundSource = { "" },
                     onStep: @Sendable (Step) async -> Void = { _ in }) async throws -> [Int: String] {
         var done = initial
         var requests = 0
@@ -100,7 +113,8 @@ enum SentenceTranslation {
         do {
             if let batcher = translator as? BatchTranslating {
                 let film = pending.isEmpty ? FilmContext()
-                    : await FilmContext.prepare(cues: cues, title: title, from: source, to: target, with: batcher, notes: notes)
+                    : await FilmContext.prepare(cues: cues, title: title, from: source, to: target, with: batcher,
+                                                notes: notes, background: background)
                 for batch in batches(pending, size: batcher.batchSize) {
                     try Task.checkCancellation()
                     let lines = batch.map { sentences.text(of: $0, in: cues) }

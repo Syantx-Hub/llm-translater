@@ -100,6 +100,17 @@ import Testing
         #expect(sync.upcomingCues(at: wall(64, anchor: t0), count: 2) == [1, 2])
     }
 
+    @Test func shortGapsKeepTheLastLineUpSoCaptionsDontBlink() {
+        let sync = SubtitleSync(cues: cues, bias: .zero)
+        sync.observe("I was waiting for you at the station for two hours", speechEndedAt: wall(66, anchor: t0))
+        #expect(sync.shownCues(at: wall(62.5, anchor: t0)) == [0]) // 1 s before the next line
+        #expect(sync.shownCues(at: wall(66.5, anchor: t0)) == [1])
+        #expect(sync.shownCues(at: wall(67.5, anchor: t0)) == [2])
+        // A long gap follows the last line: it stays a moment, then clears.
+        #expect(sync.shownCues(at: wall(69.5, anchor: t0)) == [2])
+        #expect(sync.shownCues(at: wall(70.5, anchor: t0)).isEmpty)
+    }
+
     @Test func aSeekMovesTheClockAfterTwoAgreeingLines() throws {
         let sync = SubtitleSync(cues: cues, bias: .zero)
         sync.observe("I was waiting for you at the station for two hours", speechEndedAt: wall(66, anchor: t0))
@@ -161,6 +172,34 @@ import Testing
         #expect(values["OPENSUBTITLES_USERNAME"] == "isaac")
         #expect(values["OPENSUBTITLES_PASSWORD"] == "p#ss word")
         #expect(values["EMPTY"] == "")
+    }
+
+    @Test func signedInAccountStaysInTheKeychain() throws {
+        let defaults = UserDefaults(suiteName: "SubtitleSourcesTests.account")!
+        defaults.removePersistentDomain(forName: "SubtitleSourcesTests.account")
+        let store = MemorySecretStore()
+        let (realDefaults, realStore) = (OpenSubtitlesAccount.defaults, OpenSubtitlesAccount.store)
+        OpenSubtitlesAccount.defaults = defaults
+        OpenSubtitlesAccount.store = store
+        defer { OpenSubtitlesAccount.defaults = realDefaults; OpenSubtitlesAccount.store = realStore }
+
+        try OpenSubtitlesAccount.save(username: "friend", password: "secret")
+        #expect(Secrets.openSubtitlesLogin?.username == "friend")
+        #expect(Secrets.openSubtitlesLogin?.password == "secret")
+        #expect(defaults.string(forKey: "openSubtitlesUsername") == "friend")
+        #expect(defaults.dictionaryRepresentation().values.contains { $0 as? String == "secret" } == false)
+
+        try OpenSubtitlesAccount.signOut()
+        #expect(OpenSubtitlesAccount.username == nil)
+        #expect(store.read("password") == nil)
+
+        // The viewer's own API key: Keychain first, trimmed, and wins over any .env value.
+        try OpenSubtitlesAccount.saveAPIKey("  my-own-key\n")
+        #expect(Secrets.hasOpenSubtitlesAPIKey)
+        #expect(Secrets.openSubtitlesAPIKey == "my-own-key")
+        #expect(defaults.dictionaryRepresentation().values.contains { $0 as? String == "my-own-key" } == false)
+        try OpenSubtitlesAccount.removeAPIKey()
+        #expect(!OpenSubtitlesAccount.hasAPIKey)
     }
 
     @Test func parsesOpenSubtitlesSearchResults() throws {

@@ -10,8 +10,14 @@ struct ModelCard: View {
     /// Loaded by a live or starting session.
     private var locked: Bool { store.inUse.contains(model.id) }
     private var selected: Bool { store.isSelected(model) && store.isInstalled(model) }
-    private var recommended: Bool {
-        model.id == (model.kind == .speech ? ModelCatalog.recommendedSpeech : ModelCatalog.recommendedTranslation)
+    /// Speech has one pick; translation has one for movies and one for live Translate.
+    private var recommendation: String? {
+        switch model.id {
+        case ModelCatalog.recommendedSpeech where model.kind == .speech: "Recommended"
+        case ModelCatalog.recommendedTranslation: "Recommended for movies"
+        case ModelCatalog.recommendedLiveTranslation: "Recommended for live"
+        default: nil
+        }
     }
 
     var body: some View {
@@ -32,6 +38,7 @@ struct ModelCard: View {
                     }
                 }
                 stats
+                if !model.isBuiltIn { MemoryFit(model: model) }
             }
             Spacer(minLength: 8)
             actions
@@ -51,9 +58,8 @@ struct ModelCard: View {
     private var titleRow: some View {
         HStack(spacing: 6) {
             Text(model.name).font(.headline)
-            if recommended { Badge(text: "Recommended", color: .accentColor) }
+            if let recommendation { Badge(text: recommendation, color: .accentColor) }
             if model.englishOnly { Badge(text: "English only", color: .secondary) }
-            if Hardware.ramGB < model.minRAMGB { Badge(text: "Needs \(model.minRAMGB) GB", color: .orange) }
             if !model.commercialUse { Badge(text: "Non-commercial", color: .orange) }
         }
     }
@@ -95,7 +101,8 @@ struct ModelCard: View {
                 } else {
                     Button("Use") { store.select(model) }
                         .disabled(!store.inUse.isEmpty)
-                        .help(store.inUse.isEmpty ? "" : "Stop subtitles to switch models.")
+                        .help(!store.inUse.isEmpty ? "Stop subtitles to switch models."
+                              : model.fit() == .tooBig ? "This Mac has less memory than this model needs; it may fail to load." : "")
                 }
                 if model.isBuiltIn {
                     Text("Built into macOS")
@@ -132,6 +139,52 @@ private struct Badge: View {
             .padding(.vertical, 2)
             .foregroundStyle(color)
             .background(color.opacity(0.12), in: Capsule())
+    }
+}
+
+/// The memory a model needs and wants, and whether this Mac has it.
+struct MemoryFit: View {
+    let model: ModelInfo
+    var ramGB = Hardware.ramGB
+
+    var body: some View {
+        Label {
+            Text(verdict).foregroundStyle(tone) + Text(" · " + requirement).foregroundStyle(.secondary)
+        } icon: {
+            Image(systemName: symbol).foregroundStyle(tone)
+        }
+        .font(.caption)
+        .help("Memory (RAM) is shared by the GPU and every app. Below the minimum the model swaps to disk or fails to load; between the minimum and the recommended amount it runs if other apps are closed.")
+    }
+
+    var requirement: String {
+        model.recommendedRAM > model.minRAMGB
+            ? "needs \(model.minRAMGB) GB, \(model.recommendedRAM) GB recommended"
+            : "needs \(model.minRAMGB) GB"
+    }
+
+    var verdict: String {
+        switch model.fit(ramGB: ramGB) {
+        case .comfortable: "Runs well on this Mac (\(ramGB) GB)"
+        case .tight: "May run on this Mac (\(ramGB) GB) with other apps closed"
+        case .tooBig: "Too big for this Mac (\(ramGB) GB)"
+        }
+    }
+
+    private var symbol: String {
+        switch model.fit(ramGB: ramGB) {
+        case .comfortable: "checkmark.circle.fill"
+        case .tight: "exclamationmark.triangle.fill"
+        case .tooBig: "xmark.octagon.fill"
+        }
+    }
+
+    private var tone: Color {
+        switch model.fit(ramGB: ramGB) {
+        case .comfortable: .green
+        case .tight: .orange
+        case .tooBig: .red
+        }
     }
 }
 

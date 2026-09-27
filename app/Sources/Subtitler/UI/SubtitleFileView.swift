@@ -43,7 +43,7 @@ struct SubtitleFileView: View {
                 Picker("Translate to", selection: $state.targetLanguage) {
                     ForEach(Languages.all) { Text($0.name).tag($0.code) }
                 }
-                TranslationEnginePicker(models: models, mode: .synced, inForm: true) { openWindow(id: "models") }
+                TranslationEnginePicker(models: models, mode: .synced, inForm: true) { ModelsView.request(.translation); openWindow(id: "models") }
             }
             .disabled(job.isWorking)
             if let provider = models.cloudProvider, job.input != nil, !job.isWorking, !isFinished {
@@ -52,8 +52,8 @@ struct SubtitleFileView: View {
                                   provider: provider, freeTier: models.cloudConfig.usesFreeTier(provider),
                                   model: models.cloudConfig.model(for: provider))
             }
-            if models.cloudProvider != nil, job.input != nil, !isFinished {
-                CharacterNotesField(file: job.input)
+            if models.translatesWithLLM, job.input != nil, !isFinished {
+                CharacterNotesField(file: job.input, target: state.targetLanguage)
                     .disabled(job.isWorking)
             }
 

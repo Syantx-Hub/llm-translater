@@ -63,10 +63,11 @@ actor CloudTranslator: BatchTranslating {
         return first + second
     }
 
-    func castSheet(dialogue: [String], title: String?, from source: String, to target: String) async throws -> String {
+    func castSheet(dialogue: [String], title: String?, background: String,
+                   from source: String, to target: String) async throws -> String {
         let reply = try await complete(CloudAdapter.Prompt(
             system: LLMPrompt.castSystem(from: source, to: target),
-            user: LLMPrompt.castRequest(dialogue, title: title), maxTokens: 4096))
+            user: LLMPrompt.castRequest(dialogue, title: title, background: background), maxTokens: 4096))
         return reply.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
@@ -85,7 +86,7 @@ actor CloudTranslator: BatchTranslating {
         let started = Date()
         let data: Data
         do {
-            // The key exists only inside this scope.
+            // Only a local here; the Keychain store caches it so macOS asks at most once.
             let key = secrets.read(provider.id)
             if provider.keyRequired, key?.isEmpty != false { throw CloudError.missingKey(provider.name) }
             let request = try CloudAdapter.request(provider: provider, model: model, baseURL: baseURL, key: key, prompt: prompt)
