@@ -37,6 +37,7 @@ actor Transcriber: SpeechTranscribing {
     /// Loads and prewarms the model. The first load on a new Mac compiles it for the
     /// Neural Engine, which can take a few minutes; later loads are fast.
     func load(model: String, folder: URL) async throws {
+        loads += 1
         whisper = nil
         let config = WhisperKitConfig(
             // tokenizerFolder: only a fallback (the tokenizer ships in the model folder),
@@ -47,6 +48,18 @@ actor Transcriber: SpeechTranscribing {
     }
 
     var isLoaded: Bool { whisper != nil }
+
+    /// Frees the model's memory (up to 3 GB) once any decode in flight has finished. The next
+    /// session loads it again, which takes a few seconds.
+    func unload() async {
+        let generation = loads
+        await tail?.value
+        // A load that started while waiting is the next session's: keep it.
+        if loads == generation { whisper = nil }
+    }
+
+    /// Counts loads, so an unload never frees a model loaded after it was asked for.
+    private var loads = 0
 
     /// Runs one throwaway decode so the first real line doesn't pay for GPU/ANE setup.
     func warmUp() async {

@@ -45,6 +45,13 @@ recommended amount leaves space for a browser. They're estimates, not measuremen
 except E2B, which was run on an 8 GB M2. Every model can still be downloaded, so a
 library can be set up for another Mac.
 
+**Loaded only while in use.** A session loads its speech and translation models when it
+starts, and frees both when it stops or fails (`AppState.release`), so the app idles in the
+menu bar at about 75 MB and a model switched afterwards is the only one loaded next time.
+The cost is a few seconds to load Whisper again on the next Start. A Start right after
+Stop keeps the model (Whisper is unloaded only when no session is loading or running), and
+an unload never frees a model loaded after it was asked for. Quitting frees everything.
+
 **Download (`ModelFiles.download`):**
 1. Take the per-model `flock`; if held, fail with "busy".
 2. Download into `.staging/<id>-<uuid>/`. WhisperKit: the CoreML folder, then the tokenizer

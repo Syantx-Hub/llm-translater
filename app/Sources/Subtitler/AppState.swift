@@ -338,6 +338,7 @@ final class AppState: ObservableObject {
             guard session == id else { return } // stopped or superseded: nothing to report
             models.inUse = []
             phase = .failed(error.localizedDescription)
+            await unloadSpeechIfIdle()
         }
     }
 
@@ -508,6 +509,9 @@ final class AppState: ObservableObject {
         Task { await release(owned) }
     }
 
+    /// Stops everything the session used and frees both models, so nothing sits in memory
+    /// while the app idles in the menu bar, and a model switched afterwards is the only one
+    /// loaded next time.
     private func release(_ owned: Resources) async {
         await owned.pipeline?.cancel()
         await owned.stopRecognizer?()
@@ -515,6 +519,15 @@ final class AppState: ObservableObject {
         owned.eventPump?.cancel()
         await owned.capture?.stop()
         await owned.translator?.stop()
+        await unloadSpeechIfIdle()
+    }
+
+    /// Frees Whisper unless a session is loading or running (a Start right after Stop). Also
+    /// runs after a start that was stopped mid-load, whose model finished loading anyway.
+    private func unloadSpeechIfIdle() async {
+        guard phase == .idle || isFailed else { return }
+        loadedModel = nil
+        await transcriber.unload()
     }
 
     private func fail(_ message: String) {
