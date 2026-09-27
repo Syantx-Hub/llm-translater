@@ -1,60 +1,175 @@
-# llm_translater
+# Subtitler
 
-Offline live-translation subtitle overlay for Apple Silicon Macs (M1 and later).
-Burmese is the primary subtitle language; other languages are supported too.
+Offline live subtitles for Apple Silicon Macs (M1 and later). Subtitler listens to whatever
+your Mac is playing and shows subtitles in a floating, click-through overlay — including
+over full-screen video. It can translate (Burmese first, 15 other languages) or just
+transcribe the original words.
 
-Current stage: step 1, a feasibility eval that turns a media file into translated
-subtitles so model quality and latency can be compared.
+The app ships with no models. On first launch a setup window walks through choosing and
+downloading a speech model and a translation model; the **Models** window lets you
+download, switch and delete them later.
+
+For how it all works inside, and the AI concepts behind each part, see [docs/](docs/README.md): one page per feature.
+
+## Features
+
+- **Two speech engines** — Apple Speech (macOS 26, built in) shows words as they're
+  spoken, for English, Korean, Japanese, Chinese, French, German, Spanish and Portuguese.
+  Whisper covers every other language and Auto-detect.
+- **Translate or transcribe only** — pick the mode in the main window. Translate mode
+  shows each line once the sentence is finished.
+- **Save a translated copy** — in Subtitle file mode, "Save Translated Copy…" writes the
+  file translated next to the original (`Movie.en.srt` → `Movie.my.srt`), which players
+  load automatically. Because it's done
+  ahead of time, the subtitles appear exactly when the actors speak.
+- **Subtitle file mode (synced)** — pick the subtitles for what you're watching (a file,
+  or found on OpenSubtitles), press Start while the video plays, and Subtitler finds its
+  place by matching what it hears to the file's lines. Lines then show translated on the
+  file's own timing — with the actor, not after — including on streaming services.
+  Pausing and skipping are followed.
+- **Auto-detect follows the video** — switch to a video in another language and the
+  session switches with it.
+- **Caption styling** (Captions window) — font, weight, size, line spacing, colours,
+  outline/shadow, background, position, width, lines on screen and how long lines stay.
+  A live preview, plus "Preview on screen", shows every change as you make it.
+- **Responsiveness** — Fast, Balanced or Accurate: how long a pause ends a line and how
+  long a line may get. The main window shows the current lag while live.
+- **Guided** — a tour explains the three ways to use it; every setting says what it's
+  for, and a live preview shows what each mode puts on screen.
+- **Two offline translators** — Gemma 4 (recommended for movies), a small AI model that
+  reads earlier lines, keeps names consistent and picks casual or polite speech; and
+  MADLAD-400 (recommended for live Translate), quicker but one sentence at a time with no
+  context. Each model card says how much memory it needs and whether this Mac has it. See
+  [docs/06-translation.md](docs/06-translation.md).
+- **Film background (optional, off by default)** — looks up the film's cast on Wikipedia
+  (and TMDB with your own key), sending only the title, so AI translators know who's who
+  and pick the right pronouns. Shown and editable before translating.
+- **Optional cloud translation** — OpenAI, Anthropic, Gemini, Mistral, DeepSeek, Groq,
+  OpenRouter, or a local Ollama / LM Studio, with your own key (kept in the Keychain).
+  Best for subtitle files: translated in context, cached next to the file. Offline stays
+  the default; nothing is sent unless you choose a cloud engine. See
+  [docs/14-cloud-translation.md](docs/14-cloud-translation.md).
+- **Private** — audio never leaves the Mac and is never stored.
 
 ## Requirements
 
-- Apple Silicon Mac (any M-series chip), macOS 14+
-- Python 3.10+
-- 8 GB RAM minimum; 16 GB+ to run MADLAD without conversion
+- Apple Silicon Mac, macOS 14+ (14.2+ recommended, see Permissions)
+- 8 GB RAM minimum
+- Command Line Tools (`xcode-select --install`); Xcode is not required
 
-## Setup
-
-```sh
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-No ffmpeg needed: audio is decoded with PyAV.
-
-## Run
+## Build and run
 
 ```sh
-python eval.py clip.mp4 --source en                 # EN -> Burmese, NLLB + MADLAD
-python eval.py clip.mp4 --source ko --models nllb   # KO -> Burmese, NLLB only
-python eval.py clip.mp4 --source ja --target th     # JA -> Thai
+scripts/build-app.sh                  # builds app/build/Subtitler.app
+open app/build/Subtitler.app          # the main window opens; the icon lives in the menu bar
+scripts/build-app.sh release --dev    # also enables the Python developer engines (see below)
 ```
 
-`--source` is auto-detected when omitted. Supported codes: `my en ko ja zh th vi id ms
-hi fr es de pt ru ar`. Burmese as a *source* works but Whisper's Burmese ASR is weak.
+Rebuilding replaces the app in place; quit the running copy first (menu bar icon › Quit).
 
-Output goes to `outputs/<clip>/`: `source.<lang>.srt`, `<model>.<target>.srt`,
-`segments.json`, and `comparison.md` (side-by-side table plus hardware and latency
-summary).
+### Permissions
+
+On macOS 14.2+ Subtitler hears system audio through a Core Audio process tap, which
+needs only **System Audio Recording** (System Settings › Privacy & Security › Screen &
+System Audio Recording). It never sees your screen. macOS 14.0–14.1 has no audio taps,
+so there it falls back to ScreenCaptureKit, which needs Screen Recording.
+
+An ad-hoc signed build looks like a new app to macOS after every rebuild, so it asks for
+permissions again (audio, and access to API keys in the Keychain). Run
+`scripts/make-dev-cert.sh` once: it creates a local "Subtitler Dev" signing certificate,
+which `build-app.sh` then uses automatically, so macOS asks once and remembers. (Or set
+`SIGN_IDENTITY` to any code-signing identity.) To reset the permission:
+
+```sh
+tccutil reset AudioCapture com.syantxhub.subtitler     # System Audio Recording
+tccutil reset ScreenCapture com.syantxhub.subtitler    # Screen Recording (14.0–14.1 only)
+```
 
 ## Pipeline
 
-PyAV decode → Silero VAD (only speech reaches Whisper, which prevents hallucinations on
-silence and music) → MLX Whisper `large-v3-turbo` on the GPU → NLLB-200 / MADLAD-400.
+Core Audio tap (16 kHz mono) → Silero VAD segmenter → Whisper (WhisperKit) or Apple Speech →
+Gemma 4 or MADLAD-400 via llama.cpp on the GPU (or an optional cloud LLM) → overlay.
 
-## MADLAD on 8 GB Macs
+The segmenter sends a draft whenever the speaker pauses and at regular intervals while
+they talk. Drafts are transcribed and translated immediately and shown in a lighter
+colour. When the pause turns out to be the end of the line, the final reuses that draft's
+text and translation instead of decoding again, so the line appears almost as soon as the
+speaker stops. Translation runs sentence by sentence with a repetition guard.
 
-MADLAD-400 3B needs ~6 GB in bf16 and will swap on 8 GB. Convert it once to
-CTranslate2 int8 (~3 GB) and pass the path:
+| Stage | Models | License |
+|---|---|---|
+| Voice activity | Silero VAD (bundled) | MIT |
+| Speech | Apple Speech (built in, macOS 26), Whisper Large v3 Turbo, Turbo compact, Large v3, Small, Distil-Large v3 (English) | Apple / MIT |
+| Translation | Gemma 4 E2B (default, recommended for movies), E4B, 12B, 26B-A4B, 31B; MADLAD-400 3B Q4_K_M (recommended for live Translate), Q8_0 | Apache 2.0 |
 
-```sh
-ct2-transformers-converter --model google/madlad400-3b-mt \
-    --quantization int8 --low_cpu_mem_usage --output_dir models/madlad400-3b-ct2
-python eval.py clip.mp4 --madlad-ct2 models/madlad400-3b-ct2
+Models live in `~/Library/Application Support/Subtitler/Models`. Downloads go to a
+staging folder and move into place only when complete; deleting a model removes its
+files and caches. CoreML also keeps a compiled-model cache in
+`~/Library/Caches/com.syantxhub.subtitler`, which macOS may clear at any time.
+
+## OpenSubtitles API key
+
+Searching OpenSubtitles needs a free API key. The key is **never built into the app**:
+anything inside an app bundle can be read by whoever has a copy. Instead, the first time
+someone opens Find Subtitles, it walks them through getting their own (about two
+minutes): create a free account, add a "consumer" at
+https://www.opensubtitles.com/en/consumers, paste its API key. The app checks it once and
+keeps it in their Keychain. Signing in to OpenSubtitles is optional and raises the daily
+download limit. Without a key, a subtitle file they already have still works.
+
+For development you can use a `.env` file instead (see `.env.example`); a key saved in
+the app wins over it:
+
+- `~/Library/Application Support/Subtitler/.env` — works for every build, or
+- `.env` in the repo root — read by `scripts/build-app.sh --dev` builds.
+
+```
+OPENSUBTITLES_API_KEY=your-key
+# optional, raises the daily download limit (or sign in from Find Subtitles):
+OPENSUBTITLES_USERNAME=you
+OPENSUBTITLES_PASSWORD=secret
 ```
 
-The conversion reads the full checkpoint, so close other apps while it runs.
+The key is only sent to api.opensubtitles.com and is never logged.
 
-## Licensing
+## Tests
 
-Whisper: MIT. MADLAD-400: Apache 2.0. NLLB-200: CC-BY-NC, so it is for evaluation and
-portfolio use only, not for a commercial release.
+```sh
+cd app && swift test                                   # unit + integration tests
+SUBTITLER_E2E=1 swift test --filter endToEnd           # full pipeline with installed models
+python3 -m unittest discover -s python/tests           # sidecar protocol
+```
+
+The Swift tests cover the VAD segmenter, the pipeline (draft reuse, ordering, failures,
+cancellation, transcribe-only), model install/delete on disk, caption settings, and the
+sidecar protocol over a real Python process.
+
+## Developer tools
+
+```sh
+say -o /tmp/test.aiff "Where have you been all night?"
+Subtitler=app/build/Subtitler.app/Contents/MacOS/Subtitler
+$Subtitler --file /tmp/test.aiff --source en --target my --realtime   # headless run, prints lag
+$Subtitler --file /tmp/test.aiff --responsiveness fast --translator off
+$Subtitler --translate-subtitles Movie.en.srt --target my             # translate a subtitle file
+$Subtitler --search-subtitles "breaking bad s01e01" --language en     # search OpenSubtitles (.env key)
+$Subtitler --audio-probe          # permission status + 3 s capture level (never prompts)
+$Subtitler --snapshot /tmp/ui     # renders every window to PNGs, light and dark
+```
+
+`--file` options: `--model <speech id | apple-speech>`, `--translator <model id | sidecar:nllb | off>`,
+`--responsiveness fast|balanced|accurate`, `--realtime`. Missing models are downloaded first.
+
+## Python tools (`python/`)
+
+- `eval.py` — offline eval: media file → Silero VAD → MLX Whisper → NLLB / MADLAD, with
+  per-line latency and a side-by-side `comparison.md`.
+- `translate_server.py` — JSON-lines translation sidecar. `--dev` builds can pick it under
+  Models › Developer engine, e.g. to compare NLLB-200 against MADLAD.
+
+```sh
+cd python && python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt
+.venv/bin/python eval.py clip.mp4 --source en
+```
+
+NLLB-200 is CC-BY-NC: for evaluation only, never in a commercial release.

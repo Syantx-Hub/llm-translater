@@ -1,0 +1,149 @@
+import Foundation
+import llama
+
+enum LlamaError: LocalizedError {
+    case loadFailed(String)
+    case encodeFailed(Int32)
+    case decodeFailed(Int32)
+
+    var errorDescription: String? {
+        switch self {
+        case .loadFailed(let path): "Could not load the translation model at \(path)."
+        case .encodeFailed(let code): "Translation model failed to read the input (\(code))."
+        case .decodeFailed(let code): "Translation model failed while writing (\(code))."
+        }
+    }
+}
+
+/// Runs an encoder-decoder MADLAD-400 GGUF with llama.cpp on the GPU (Metal).
+///
+/// MADLAD chooses the output language from a "<2xx>" prefix on the input and detects
+/// the source language itself, so one loaded model serves every pair.
+actor LlamaTranslator: Translator {
+    private let modelPath: String
+    private var model: OpaquePointer?
+    private var context: OpaquePointer?
+    private var sampler: UnsafeMutablePointer<llama_sampler>?
+
+    private let maxInputTokens = 480
+    private let maxOutputTokens = 256
+
+    init(modelPath: String) {
+        self.modelPath = modelPath
+    }
+
+    func start() async throws {
+        guard model == nil else { return }
+        Llama.initBackend
+        var modelParams = llama_model_default_params()
+        modelParams.n_gpu_layers = 999
+        guard let model = llama_model_load_from_file(modelPath, modelParams) else {
+            throw LlamaError.loadFailed(modelPath)
+        }
+        var contextParams = llama_context_default_params()
+        contextParams.n_ctx = 1024
+        // The encoder must see the whole input in a single physical batch.
+        contextParams.n_batch = 512
+        contextParams.n_ubatch = 512
+        contextParams.n_threads = Int32(max(1, ProcessInfo.processInfo.activeProcessorCount - 2))
+        guard let context = llama_init_from_model(model, contextParams) else {
+            llama_model_free(model)
+            throw LlamaError.loadFailed(modelPath)
+        }
+        let chain = llama_sampler_chain_init(llama_sampler_chain_default_params())
+        // Mild repetition penalty: greedy MT decoding otherwise loops on long inputs.
+        let vocabSize = llama_vocab_n_tokens(llama_model_get_vocab(model))
+        llama_sampler_chain_add(chain, llama_sampler_init_penalties(vocabSize, 64, 1.15, 0, 0))
+        llama_sampler_chain_add(chain, llama_sampler_init_greedy())
+        self.model = model
+        self.context = context
+        self.sampler = chain
+        // The first decode compiles Metal kernels (~1-2 s); do it now, not on the first line.
+        _ = try? await translate("Hello.", from: "en", to: "my", context: [])
+    }
+
+    func translate(_ text: String, from source: String, to target: String, context lines: [String]) async throws -> String {
+        guard let model, let context, let sampler else { throw LlamaError.loadFailed(modelPath) }
+        let vocab = llama_model_get_vocab(model)
+        llama_memory_clear(llama_get_memory(context), true)
+        llama_sampler_reset(sampler)
+
+        var input = Llama.tokenize("<2\(target)> \(text)", vocab: vocab)
+        if input.count > maxInputTokens { input = Array(input.prefix(maxInputTokens)) }
+        let encoded = input.withUnsafeMutableBufferPointer {
+            llama_encode(context, llama_batch_get_one($0.baseAddress, Int32($0.count)))
+        }
+        guard encoded == 0 else { throw LlamaError.encodeFailed(encoded) }
+
+        var token = llama_model_decoder_start_token(model)
+        if token == LLAMA_TOKEN_NULL { token = llama_vocab_bos(vocab) }
+        var output: [llama_token] = []
+        // Burmese needs roughly 2-3x the tokens of the source; more than that is a loop.
+        let limit = min(maxOutputTokens, input.count * 4 + 16)
+        for _ in 0..<limit {
+            let decoded = withUnsafeMutablePointer(to: &token) {
+                llama_decode(context, llama_batch_get_one($0, 1))
+            }
+            guard decoded == 0 else { throw LlamaError.decodeFailed(decoded) }
+            token = llama_sampler_sample(sampler, context, -1)
+            if llama_vocab_is_eog(vocab, token) { break }
+            output.append(token)
+            if Self.isLooping(output) { output.removeLast(8); break }
+            try Task.checkCancellation()
+        }
+        return Llama.detokenize(output, vocab: vocab).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    func stop() async {
+        if let sampler { llama_sampler_free(sampler) }
+        if let context { llama_free(context) }
+        if let model { llama_model_free(model) }
+        sampler = nil
+        context = nil
+        model = nil
+    }
+
+    /// True when the last `window` tokens repeat the `window` before them.
+    static func isLooping(_ tokens: [llama_token], window: Int = 8) -> Bool {
+        guard tokens.count >= window * 2 else { return false }
+        return tokens.suffix(window).elementsEqual(tokens.dropLast(window).suffix(window))
+    }
+}
+
+/// llama.cpp plumbing shared by the MADLAD and Gemma translators.
+enum Llama {
+    /// llama.cpp's global setup; runs once. Its logs are verbose, so only errors are kept.
+    static let initBackend: Void = {
+        llama_log_set({ level, text, _ in
+            guard level == GGML_LOG_LEVEL_ERROR, let text else { return }
+            fputs(String(cString: text), stderr)
+        }, nil)
+        llama_backend_init()
+    }()
+
+    /// - Parameter addSpecial: add the model's BOS token. Special tokens written in the
+    ///   text ("<|turn>") are always parsed as such.
+    static func tokenize(_ text: String, vocab: OpaquePointer?, addSpecial: Bool = true) -> [llama_token] {
+        let utf8Count = Int32(text.utf8.count)
+        var tokens = [llama_token](repeating: 0, count: Int(utf8Count) + 8)
+        var count = llama_tokenize(vocab, text, utf8Count, &tokens, Int32(tokens.count), addSpecial, true)
+        if count < 0 {
+            tokens = [llama_token](repeating: 0, count: Int(-count))
+            count = llama_tokenize(vocab, text, utf8Count, &tokens, Int32(tokens.count), addSpecial, true)
+        }
+        return Array(tokens.prefix(Int(max(count, 0))))
+    }
+
+    /// - Parameter special: keep special tokens ("<|channel>") in the text.
+    static func detokenize(_ tokens: [llama_token], vocab: OpaquePointer?, special: Bool = false) -> String {
+        var tokens = tokens
+        var buffer = [CChar](repeating: 0, count: tokens.count * 16 + 16)
+        var length = llama_detokenize(vocab, &tokens, Int32(tokens.count), &buffer, Int32(buffer.count), true, special)
+        if length < 0 {
+            buffer = [CChar](repeating: 0, count: Int(-length) + 1)
+            length = llama_detokenize(vocab, &tokens, Int32(tokens.count), &buffer, Int32(buffer.count), true, special)
+        }
+        let bytes = buffer.prefix(Int(max(length, 0))).map { UInt8(bitPattern: $0) }
+        return String(decoding: bytes, as: UTF8.self)
+    }
+}

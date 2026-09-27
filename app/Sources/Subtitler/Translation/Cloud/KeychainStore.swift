@@ -1,0 +1,151 @@
+import Foundation
+import Security
+
+/// Where API keys live. The app never keeps a key in UI state; it's read when a request is built.
+protocol SecretStore: Sendable {
+    /// The secret itself: only when sending a request.
+    func read(_ name: String) -> String?
+    /// Whether a secret is saved, without reading it (no Keychain prompt).
+    func contains(_ name: String) -> Bool
+    /// "••••1234": all the UI may ever show of a saved key, without reading the key.
+    func hint(_ name: String) -> String?
+    func save(_ secret: String, for name: String) throws
+    func delete(_ name: String) throws
+}
+
+enum SecretHint {
+    static func of(_ secret: String) -> String { "••••" + String(secret.suffix(4)) }
+}
+
+enum SecretStoreError: LocalizedError {
+    case keychain(OSStatus)
+
+    var errorDescription: String? {
+        switch self {
+        case .keychain(let status):
+            "The Keychain refused the change (\(SecCopyErrorMessageString(status, nil) as String? ?? "error \(status)"))."
+        }
+    }
+}
+
+/// API keys in the macOS Keychain: one generic password per provider, only readable while
+/// the Mac is unlocked, never synced to other devices (iCloud Keychain) or backups.
+struct KeychainStore: SecretStore {
+    static let app = KeychainStore(servicePrefix: "com.syantxhub.subtitler.cloud.")
+
+    let servicePrefix: String
+    var itemLabel = "Subtitler API key"
+    private static let account = "api-key"
+
+    func read(_ name: String) -> String? {
+        if let cached = Self.cache.get(servicePrefix + name) { return cached }
+        guard let secret = readKeychain(name) else { return nil }
+        Self.cache.set(servicePrefix + name, secret)
+        return secret
+    }
+
+    /// Kept for the app's lifetime once read: without a team ID macOS asks before each
+    /// Keychain read until "Always Allow" (and again after every rebuild), and a film is
+    /// hundreds of requests. Private here, so no view can snapshot or show it.
+    private static let cache = SecretCache()
+
+    private func readKeychain(_ name: String) -> String? {
+        for dataProtection in [true, false] {
+            var query = base(name, dataProtection: dataProtection)
+            query[kSecReturnData as String] = true
+            query[kSecMatchLimit as String] = kSecMatchLimitOne
+            var result: AnyObject?
+            if SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+               let data = result as? Data, let secret = String(data: data, encoding: .utf8) {
+                return secret
+            }
+        }
+        return nil
+    }
+
+    func contains(_ name: String) -> Bool { attributes(name) != nil }
+
+    /// Stored beside the key as an attribute when it's saved, so showing it never reads the key.
+    func hint(_ name: String) -> String? {
+        guard let attributes = attributes(name) else { return nil }
+        return attributes[kSecAttrComment as String] as? String ?? "••••"
+    }
+
+    /// Reading an item's attributes (not its data) doesn't need the user's permission.
+    private func attributes(_ name: String) -> [String: Any]? {
+        for dataProtection in [true, false] {
+            var query = base(name, dataProtection: dataProtection)
+            query[kSecReturnAttributes as String] = true
+            query[kSecMatchLimit as String] = kSecMatchLimitOne
+            var result: AnyObject?
+            if SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess, let attributes = result as? [String: Any] {
+                return attributes
+            }
+        }
+        return nil
+    }
+
+    func save(_ secret: String, for name: String) throws {
+        try delete(name)
+        let data = Data(secret.utf8)
+        let hint = SecretHint.of(secret)
+        var status = add(name, data, hint: hint, dataProtection: true)
+        // The data-protection keychain needs a keychain-access-groups entitlement, which
+        // ad-hoc signed builds don't have; the login keychain works everywhere.
+        if status == errSecMissingEntitlement { status = add(name, data, hint: hint, dataProtection: false) }
+        guard status == errSecSuccess else { throw SecretStoreError.keychain(status) }
+        Self.cache.set(servicePrefix + name, secret)
+    }
+
+    func delete(_ name: String) throws {
+        Self.cache.set(servicePrefix + name, nil)
+        for dataProtection in [true, false] {
+            let status = SecItemDelete(base(name, dataProtection: dataProtection) as CFDictionary)
+            guard [errSecSuccess, errSecItemNotFound, errSecMissingEntitlement].contains(status) else {
+                throw SecretStoreError.keychain(status)
+            }
+        }
+    }
+
+    private func add(_ name: String, _ data: Data, hint: String, dataProtection: Bool) -> OSStatus {
+        var item = base(name, dataProtection: dataProtection)
+        item[kSecValueData as String] = data
+        item[kSecAttrComment as String] = hint
+        item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        item[kSecAttrLabel as String] = "\(itemLabel) (\(name))"
+        return SecItemAdd(item as CFDictionary, nil)
+    }
+
+    private func base(_ name: String, dataProtection: Bool) -> [String: Any] {
+        var query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: servicePrefix + name,
+            kSecAttrAccount as String: Self.account,
+            kSecAttrSynchronizable as String: false,
+        ]
+        if dataProtection { query[kSecUseDataProtectionKeychain as String] = true }
+        return query
+    }
+}
+
+private final class SecretCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var secrets: [String: String] = [:]
+
+    func get(_ service: String) -> String? { lock.withLock { secrets[service] } }
+    func set(_ service: String, _ secret: String?) { lock.withLock { secrets[service] = secret } }
+}
+
+/// For tests and `--snapshot`: nothing touches the real Keychain.
+final class MemorySecretStore: SecretStore, @unchecked Sendable {
+    private let lock = NSLock()
+    private var secrets: [String: String]
+
+    init(_ secrets: [String: String] = [:]) { self.secrets = secrets }
+
+    func read(_ name: String) -> String? { lock.withLock { secrets[name] } }
+    func contains(_ name: String) -> Bool { read(name) != nil }
+    func hint(_ name: String) -> String? { read(name).map(SecretHint.of) }
+    func save(_ secret: String, for name: String) throws { lock.withLock { secrets[name] = secret } }
+    func delete(_ name: String) throws { _ = lock.withLock { secrets.removeValue(forKey: name) } }
+}
