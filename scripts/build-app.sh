@@ -57,6 +57,9 @@ if [[ $DEV == 1 ]]; then
     # Development only: lets the app find python/translate_server.py in this checkout.
     /usr/libexec/PlistBuddy -c "Add :SubtitlerRepoRoot string $ROOT" "$APP/Contents/Info.plist"
 fi
+# No secret ever goes into the app: anyone with a copy could read it. Each Mac keeps its
+# own OpenSubtitles key in ~/Library/Application Support/Subtitler/.env.
+rm -f "$APP/Contents/Resources/Secrets.env"
 
 # Sign inside-out: the framework first, then the app (no --deep).
 codesign --force --sign "$IDENTITY" "$APP/Contents/Frameworks/llama.framework"

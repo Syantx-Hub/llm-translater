@@ -41,9 +41,15 @@ episode first, then WEB-DL/BluRay, then download count. Files are saved as
 "Breaking Bad S01E01.en.srt" / "Parasite (2019).ko.srt" under
 `~/Library/Application Support/Subtitler/Subtitles`.
 
-**Secrets (`Secrets`).** Read in order: environment variable →
-`~/Library/Application Support/Subtitler/.env` → repo `.env` (`--dev` builds only).
-`.env` is git-ignored; the key is only sent to api.opensubtitles.com and never logged.
+**Secrets (`Secrets`).** No key ships inside the app: anything in a bundle can be read by
+whoever has a copy. Each person pastes their own free API key into Find Subtitles, which
+checks it once (`GET /features?query=matrix`: the `infos` endpoints accept any key, so they can't tell a wrong one) and keeps it in the Keychain (`OpenSubtitlesAccount`).
+Whether a key exists is read from the item's attributes, so opening the window never asks
+Keychain permission; the key itself is read only to send a request. Developers can use a
+`.env` instead, read in order: environment variable →
+`~/Library/Application Support/Subtitler/.env` → repo `.env` (`--dev` builds only); a
+Keychain key wins. `.env` is git-ignored; the key is only sent to api.opensubtitles.com
+and never logged.
 
 **Why no OpenSubtitles AI translation:** its translation API doesn't offer Burmese, so the
 offline MADLAD path stays.

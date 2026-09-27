@@ -8,7 +8,7 @@ enum OpenSubtitlesError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .missingAPIKey:
-            "Add OPENSUBTITLES_API_KEY to a .env file (see README) to search OpenSubtitles."
+            "Add your free OpenSubtitles API key above to search."
         case .http(401, _), .http(403, _):
             "OpenSubtitles rejected the API key or login."
         case .http(406, let message), .http(429, let message):
@@ -102,10 +102,25 @@ actor OpenSubtitlesClient {
         self.session = session
     }
 
-    /// A client configured from `.env`, or nil when there's no API key.
-    static func fromSecrets() -> OpenSubtitlesClient? {
+    /// A client configured from `Secrets`, or nil when there's no API key. The login (and so
+    /// the Keychain) is only read when `withLogin`: downloading needs it, searching doesn't.
+    static func fromSecrets(withLogin: Bool = true) -> OpenSubtitlesClient? {
         guard let key = Secrets.openSubtitlesAPIKey else { return nil }
-        return OpenSubtitlesClient(apiKey: key, username: Secrets.openSubtitlesUsername, password: Secrets.openSubtitlesPassword)
+        let login = withLogin ? Secrets.openSubtitlesLogin : nil
+        return OpenSubtitlesClient(apiKey: key, username: login?.username, password: login?.password)
+    }
+
+    /// Checks the API key with a tiny lookup. (The `infos` endpoints answer any key, so they
+    /// can't tell a wrong one; `features` rejects it with 401, `subtitles` with 403.)
+    func verifyAPIKey() async throws {
+        _ = try await send(URLRequest(url: Self.url(baseURL, "features", [URLQueryItem(name: "query", value: "matrix")])))
+    }
+
+    /// Checks a username and password by logging in once.
+    func verifyLogin() async throws {
+        token = nil
+        try await logInIfConfigured()
+        if token == nil { throw OpenSubtitlesError.http(401, nil) }
     }
 
     /// - Parameter languages: Whisper/ISO 639-1 codes to filter by (empty = any).

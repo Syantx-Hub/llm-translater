@@ -7,10 +7,29 @@ import Foundation
 /// 2. `~/Library/Application Support/Subtitler/.env` (works for every build),
 /// 3. `.env` in the repo checkout, for development builds that know it
 ///    (`scripts/build-app.sh --dev`, `SUBTITLER_REPO`, or running from the repo).
+///
+/// Nothing secret is ever built into the app, where anyone with a copy could read it. An
+/// OpenSubtitles account signed in from the app (`OpenSubtitlesAccount`, Keychain) wins
+/// over a login in a `.env` file.
 enum Secrets {
-    static var openSubtitlesAPIKey: String? { value("OPENSUBTITLES_API_KEY") }
-    static var openSubtitlesUsername: String? { value("OPENSUBTITLES_USERNAME") }
-    static var openSubtitlesPassword: String? { value("OPENSUBTITLES_PASSWORD") }
+    /// The viewer's own key, saved from Find Subtitles (Keychain), or one in a `.env` file.
+    static var openSubtitlesAPIKey: String? {
+        OpenSubtitlesAccount.hasAPIKey ? OpenSubtitlesAccount.apiKey : value("OPENSUBTITLES_API_KEY")
+    }
+
+    /// Whether a key is set up, without reading the Keychain item (which can ask permission).
+    static var hasOpenSubtitlesAPIKey: Bool {
+        OpenSubtitlesAccount.hasAPIKey || value("OPENSUBTITLES_API_KEY")?.isEmpty == false
+    }
+
+    static var openSubtitlesLogin: (username: String, password: String)? {
+        if let username = OpenSubtitlesAccount.username {
+            return OpenSubtitlesAccount.password.map { (username, $0) }
+        }
+        guard let username = value("OPENSUBTITLES_USERNAME"),
+              let password = value("OPENSUBTITLES_PASSWORD") else { return nil }
+        return (username, password)
+    }
 
     static var appSupportFile: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -50,5 +69,41 @@ enum Secrets {
             values[key] = value
         }
         return values
+    }
+}
+
+/// The viewer's OpenSubtitles setup from Find Subtitles: their free API key (needed to
+/// search) in the Keychain, and optionally a login (more downloads a day), the name in
+/// UserDefaults and the password in the Keychain.
+enum OpenSubtitlesAccount {
+    private static let usernameKey = "openSubtitlesUsername"
+    static var store: SecretStore = KeychainStore(servicePrefix: "com.syantxhub.subtitler.opensubtitles.",
+                                                  itemLabel: "Subtitler OpenSubtitles login")
+    static var defaults: UserDefaults = .standard
+
+    static var username: String? { defaults.string(forKey: usernameKey) }
+    /// Reads the Keychain: only when logging in.
+    static var password: String? { store.read("password") }
+
+    static func save(username: String, password: String) throws {
+        try store.save(password, for: "password")
+        defaults.set(username, forKey: usernameKey)
+    }
+
+    static func signOut() throws {
+        try store.delete("password")
+        defaults.removeObject(forKey: usernameKey)
+    }
+
+    static var hasAPIKey: Bool { store.contains("apiKey") }
+    /// Reads the Keychain: only when building a request.
+    static var apiKey: String? { store.read("apiKey") }
+
+    static func saveAPIKey(_ key: String) throws {
+        try store.save(key.trimmingCharacters(in: .whitespacesAndNewlines), for: "apiKey")
+    }
+
+    static func removeAPIKey() throws {
+        try store.delete("apiKey")
     }
 }

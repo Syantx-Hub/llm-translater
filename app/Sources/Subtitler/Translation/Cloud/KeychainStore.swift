@@ -1,7 +1,7 @@
 import Foundation
 import Security
 
-/// Where API keys live. The app only ever holds a key while it builds a request.
+/// Where API keys live. The app never keeps a key in UI state; it's read when a request is built.
 protocol SecretStore: Sendable {
     /// The secret itself: only when sending a request.
     func read(_ name: String) -> String?
@@ -34,9 +34,22 @@ struct KeychainStore: SecretStore {
     static let app = KeychainStore(servicePrefix: "com.syantxhub.subtitler.cloud.")
 
     let servicePrefix: String
+    var itemLabel = "Subtitler API key"
     private static let account = "api-key"
 
     func read(_ name: String) -> String? {
+        if let cached = Self.cache.get(servicePrefix + name) { return cached }
+        guard let secret = readKeychain(name) else { return nil }
+        Self.cache.set(servicePrefix + name, secret)
+        return secret
+    }
+
+    /// Kept for the app's lifetime once read: without a team ID macOS asks before each
+    /// Keychain read until "Always Allow" (and again after every rebuild), and a film is
+    /// hundreds of requests. Private here, so no view can snapshot or show it.
+    private static let cache = SecretCache()
+
+    private func readKeychain(_ name: String) -> String? {
         for dataProtection in [true, false] {
             var query = base(name, dataProtection: dataProtection)
             query[kSecReturnData as String] = true
@@ -81,9 +94,11 @@ struct KeychainStore: SecretStore {
         // ad-hoc signed builds don't have; the login keychain works everywhere.
         if status == errSecMissingEntitlement { status = add(name, data, hint: hint, dataProtection: false) }
         guard status == errSecSuccess else { throw SecretStoreError.keychain(status) }
+        Self.cache.set(servicePrefix + name, secret)
     }
 
     func delete(_ name: String) throws {
+        Self.cache.set(servicePrefix + name, nil)
         for dataProtection in [true, false] {
             let status = SecItemDelete(base(name, dataProtection: dataProtection) as CFDictionary)
             guard [errSecSuccess, errSecItemNotFound, errSecMissingEntitlement].contains(status) else {
@@ -97,7 +112,7 @@ struct KeychainStore: SecretStore {
         item[kSecValueData as String] = data
         item[kSecAttrComment as String] = hint
         item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-        item[kSecAttrLabel as String] = "Subtitler API key (\(name))"
+        item[kSecAttrLabel as String] = "\(itemLabel) (\(name))"
         return SecItemAdd(item as CFDictionary, nil)
     }
 
@@ -111,6 +126,14 @@ struct KeychainStore: SecretStore {
         if dataProtection { query[kSecUseDataProtectionKeychain as String] = true }
         return query
     }
+}
+
+private final class SecretCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var secrets: [String: String] = [:]
+
+    func get(_ service: String) -> String? { lock.withLock { secrets[service] } }
+    func set(_ service: String, _ secret: String?) { lock.withLock { secrets[service] = secret } }
 }
 
 /// For tests and `--snapshot`: nothing touches the real Keychain.

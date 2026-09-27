@@ -17,7 +17,10 @@ final class SubtitleSearch: ObservableObject {
     /// The file just loaded for Subtitle file mode: the window then offers to start.
     @Published private(set) var loaded: URL?
 
-    var hasAPIKey: Bool { Secrets.openSubtitlesAPIKey != nil }
+    /// Checked without reading the Keychain item; refreshed when a key is saved or removed.
+    @Published private(set) var hasAPIKey = Secrets.hasOpenSubtitlesAPIKey
+
+    func refreshKey() { hasAPIKey = Secrets.hasOpenSubtitlesAPIKey }
 
     func search() {
         var request = SubtitleQuery.parse(query, season: isEpisode ? season : "", episode: isEpisode ? episode : "")
@@ -32,7 +35,7 @@ final class SubtitleSearch: ObservableObject {
             return
         }
         request.title = request.title.trimmingCharacters(in: .whitespaces)
-        guard !request.title.isEmpty, let client = OpenSubtitlesClient.fromSecrets() else {
+        guard !request.title.isEmpty, let client = OpenSubtitlesClient.fromSecrets(withLogin: false) else {
             error = OpenSubtitlesError.missingAPIKey.localizedDescription
             return
         }
@@ -90,10 +93,9 @@ struct SubtitleSearchView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             if !search.hasAPIKey {
-                Label("Add OPENSUBTITLES_API_KEY to \(Secrets.appSupportFile.path) or the repo's .env to search.",
-                      systemImage: "key")
-                    .font(.callout).foregroundStyle(.orange)
-                    .fixedSize(horizontal: false, vertical: true)
+                OpenSubtitlesKeySetup { search.refreshKey() }
+            } else {
+                OpenSubtitlesLoginRow { search.refreshKey() }
             }
             HStack {
                 TextField("Film or show title, or \"breaking bad s01e01\"", text: $search.query)
@@ -201,5 +203,194 @@ struct SubtitleSearchView: View {
         dismissWindow(id: "find-subtitles")
         openWindow(id: "main")
         NSApp.activate(ignoringOtherApps: true)
+    }
+}
+
+/// Optional OpenSubtitles sign-in: more downloads a day. The password goes straight to the
+/// Keychain and is never shown again.
+struct OpenSubtitlesLoginRow: View {
+    /// Called after the saved API key is removed.
+    var onKeyRemoved: () -> Void = {}
+    @StateObject private var login = OpenSubtitlesLogin()
+
+    var body: some View {
+        OpenSubtitlesLoginContent(login: login, onKeyRemoved: onKeyRemoved)
+    }
+}
+
+/// First run: searching OpenSubtitles needs the viewer's own free API key. Nothing secret
+/// ships inside the app, so each person gets one (two minutes) and it stays in their Keychain.
+struct OpenSubtitlesKeySetup: View {
+    var onSaved: () -> Void
+    @StateObject private var setup = KeySetup()
+
+    @MainActor
+    final class KeySetup: ObservableObject {
+        @Published var draft = ""
+        @Published var checking = false
+        @Published var error: String?
+
+        func save(then done: @escaping () -> Void) {
+            let key = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !key.isEmpty else { return }
+            checking = true
+            error = nil
+            Task {
+                do {
+                    try await OpenSubtitlesClient(apiKey: key).verifyAPIKey()
+                    try OpenSubtitlesAccount.saveAPIKey(key)
+                    draft = ""
+                    done()
+                } catch OpenSubtitlesError.http(let code, _) where code == 401 || code == 403 {
+                    error = "OpenSubtitles didn't accept that key. Copy the API key from your consumer's page, not your password."
+                } catch {
+                    self.error = error.localizedDescription
+                }
+                checking = false
+            }
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("Connect OpenSubtitles (free, about two minutes)", systemImage: "key.fill")
+                .font(.headline)
+            VStack(alignment: .leading, spacing: 5) {
+                step(1, "Create a free account:", link: "opensubtitles.com/en/users/sign_up",
+                     url: "https://www.opensubtitles.com/en/users/sign_up")
+                step(2, "Add a New consumer (any name):",
+                     link: "opensubtitles.com/en/consumers", url: "https://www.opensubtitles.com/en/consumers")
+                step(3, "Copy its API key and paste it here.", link: nil, url: nil)
+            }
+            HStack {
+                SecureField("OpenSubtitles API key", text: $setup.draft)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { setup.save(then: onSaved) }
+                if setup.checking {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Button("Save") { setup.save(then: onSaved) }
+                        .disabled(setup.draft.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+            if let error = setup.error {
+                Label(error, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HelpNote("The key is checked once with OpenSubtitles, then kept in your Keychain; it's only ever sent to api.opensubtitles.com. No key? You can still choose a subtitle file you already have in Subtitle file mode.")
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.accentColor.opacity(0.08)))
+    }
+
+    private func step(_ number: Int, _ text: String, link: String?, url: String?) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text("\(number).").monospacedDigit().foregroundStyle(.secondary)
+            Text(text)
+            if let link, let url, let destination = URL(string: url) { Link(link, destination: destination) }
+        }
+        .font(.callout)
+    }
+}
+
+@MainActor
+final class OpenSubtitlesLogin: ObservableObject {
+    @Published var username = OpenSubtitlesAccount.username
+    @Published var expanded = false
+    @Published var draftName = ""
+    @Published var draftPassword = ""
+    @Published var checking = false
+    @Published var error: String?
+
+    func signIn() {
+        let name = draftName.trimmingCharacters(in: .whitespaces)
+        let password = draftPassword
+        guard !name.isEmpty, !password.isEmpty, let key = Secrets.openSubtitlesAPIKey else { return }
+        checking = true
+        error = nil
+        Task {
+            do {
+                try await OpenSubtitlesClient(apiKey: key, username: name, password: password).verifyLogin()
+                try OpenSubtitlesAccount.save(username: name, password: password)
+                username = name
+                expanded = false
+                clear()
+            } catch OpenSubtitlesError.http(let code, _) where code == 400 || code == 401 {
+                error = "Wrong username or password."
+            } catch {
+                self.error = error.localizedDescription
+            }
+            checking = false
+        }
+    }
+
+    func signOut() {
+        try? OpenSubtitlesAccount.signOut()
+        username = nil
+    }
+
+    func clear() {
+        draftName = ""
+        draftPassword = ""
+    }
+}
+
+private struct OpenSubtitlesLoginContent: View {
+    @ObservedObject var login: OpenSubtitlesLogin
+    var onKeyRemoved: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if OpenSubtitlesAccount.hasAPIKey {
+                HStack(spacing: 4) {
+                    HelpNote("Your OpenSubtitles API key is in your Keychain.")
+                    Button("Remove key") {
+                        try? OpenSubtitlesAccount.removeAPIKey()
+                        onKeyRemoved()
+                    }
+                    .buttonStyle(.link).font(.caption)
+                }
+            }
+            if let username = login.username {
+                HStack(spacing: 8) {
+                    Label("Signed in to OpenSubtitles as \(username)", systemImage: "person.crop.circle.badge.checkmark")
+                        .font(.callout)
+                    Spacer()
+                    Button("Sign Out") {
+                        login.signOut()
+                    }
+                }
+            } else if login.expanded {
+                HStack {
+                    TextField("Username", text: $login.draftName)
+                        .textFieldStyle(.roundedBorder)
+                    SecureField("Password", text: $login.draftPassword)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit(login.signIn)
+                    if login.checking {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Button("Sign In", action: login.signIn)
+                            .disabled(login.draftName.trimmingCharacters(in: .whitespaces).isEmpty || login.draftPassword.isEmpty)
+                    }
+                    Button("Cancel") { login.expanded = false; login.clear() }
+                }
+                HStack(spacing: 4) {
+                    HelpNote("A free account raises the daily download limit. No account yet?")
+                    Link("opensubtitles.com", destination: URL(string: "https://www.opensubtitles.com/en/users/sign_up")!)
+                        .font(.caption)
+                }
+            } else {
+                HStack(spacing: 4) {
+                    HelpNote("Hit the daily download limit?")
+                    Button("Sign in to OpenSubtitles (free)") { login.expanded = true }
+                        .buttonStyle(.link).font(.caption)
+                }
+            }
+            if let error = login.error {
+                Label(error, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.red)
+            }
+        }
     }
 }
